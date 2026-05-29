@@ -5,6 +5,9 @@ A local, private AI notetaker for Windows (also macOS / Linux) powered by the
 audio, transcribes it in real time, and lets a locally-run LLM rewrite or
 summarise the transcript. No data leaves your machine.
 
+<img width="1645" height="1291" alt="qvac-notetaker" src="https://github.com/user-attachments/assets/347dbe20-e8b6-4526-81fa-96a1517e99f8" />
+
+
 ## Features
 
 - Recording name (default "Untitled")
