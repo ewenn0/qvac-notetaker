@@ -1,0 +1,13 @@
+node_modules
+out
+dist
+.vite
+.DS_Store
+*.log
+.vscode
+.idea
+.env
+.env.local
+# Local QVAC model cache lives in the user profile, not here, but in case
+# any tooling drops a stray copy in-workspace, ignore it.
+.qvac-cache

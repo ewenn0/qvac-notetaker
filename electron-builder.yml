@@ -1,0 +1,31 @@
+appId: io.notetaker.qvac
+productName: QVAC Notetaker
+directories:
+  buildResources: build
+  output: dist
+files:
+  - "!**/.vscode/*"
+  - "!src/*"
+  - "!electron.vite.config.{js,ts,mjs,cjs}"
+  - "!{.eslintrc.cjs,.prettierrc.json,.prettierignore,tsconfig.json,tsconfig.*.json}"
+asarUnpack:
+  - resources/**
+win:
+  executableName: qvac-notetaker
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+linux:
+  target:
+    - AppImage
+  category: Office

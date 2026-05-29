@@ -1,0 +1,270 @@
+@import 'tailwindcss';
+
+/* ============================================================================
+ * THEME TOKENS — single source of truth for the whole UI.
+ *
+ * Every color in the app resolves to one of these CSS variables, so a new
+ * theme is just another `[data-theme="…"]` block below. The default (dark
+ * violet) theme lives on :root and matches the product mockup.
+ *
+ * The variables are mapped into Tailwind v4 utilities via `@theme inline`
+ * further down, which means classes like `bg-surface`, `text-muted`,
+ * `border-border`, `text-accent`, `ring-accent` resolve to these vars at
+ * runtime. Swapping `document.documentElement.dataset.theme` re-skins the
+ * whole app live, with no rebuild.
+ * ========================================================================== */
+
+:root,
+[data-theme='dark'] {
+  /* Surfaces */
+  --bg: #0a0910;            /* window / app background          */
+  --bg-titlebar: #0d0b15;   /* custom title bar                 */
+  --surface: #14121d;       /* cards, panels, footer            */
+  --surface-2: #1b1827;     /* inputs, selects, secondary btns  */
+  --surface-3: #262232;     /* hover state for surface-2        */
+
+  /* Lines */
+  --border: #272433;        /* subtle dividers / card borders   */
+  --border-strong: #34303f; /* focused / emphasised borders     */
+
+  /* Text */
+  --text: #ecebf3;          /* primary copy                     */
+  --text-muted: #9a96a8;    /* labels, secondary copy           */
+  --text-faint: #6a6678;    /* placeholders, disabled, hints    */
+
+  /* Accent (violet) */
+  --accent: #7c5cff;
+  --accent-hover: #9077ff;
+  --accent-strong: #6a45ff;
+  --accent-fg: #ffffff;                    /* text on accent fills        */
+  --accent-soft: rgb(124 92 255 / 0.14);   /* tints / icon tiles          */
+  --accent-text: #b6a4ff;                  /* accent-on-dark links/labels */
+  --accent-gradient: linear-gradient(135deg, #8b5cf6 0%, #6a45ff 100%);
+
+  /* Status */
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #fb7185;
+  --danger-bg: rgb(244 63 94 / 0.12);
+  --danger-border: rgb(244 63 94 / 0.4);
+
+  /* Misc */
+  --ring: rgb(124 92 255 / 0.45);
+  --shadow: 0 18px 48px -16px rgb(0 0 0 / 0.7);
+}
+
+/* Demo alternate theme — proves the swap mechanism. Set
+ * `document.documentElement.dataset.theme = 'light'` to use it. */
+[data-theme='light'] {
+  --bg: #f4f3f8;
+  --bg-titlebar: #ebe9f2;
+  --surface: #ffffff;
+  --surface-2: #f1eff7;
+  --surface-3: #e6e3f0;
+
+  --border: #e0ddea;
+  --border-strong: #cbc6d8;
+
+  --text: #1c1830;
+  --text-muted: #5d5872;
+  --text-faint: #948fa6;
+
+  --accent: #6d4dff;
+  --accent-hover: #5b3bff;
+  --accent-strong: #5736f0;
+  --accent-fg: #ffffff;
+  --accent-soft: rgb(109 77 255 / 0.12);
+  --accent-text: #5b3bff;
+  --accent-gradient: linear-gradient(135deg, #7c5cff 0%, #5736f0 100%);
+
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #e11d48;
+  --danger-bg: rgb(225 29 72 / 0.1);
+  --danger-border: rgb(225 29 72 / 0.35);
+
+  --ring: rgb(109 77 255 / 0.4);
+  --shadow: 0 18px 48px -16px rgb(60 50 90 / 0.25);
+}
+
+/* Map tokens -> Tailwind color utilities (bg-*, text-*, border-*, ring-*). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-titlebar: var(--bg-titlebar);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-text: var(--accent-text);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ============================================================================
+ * REUSABLE COMPONENT CLASSES
+ * A handful of semantic classes for the most-repeated patterns, so buttons,
+ * inputs and panels stay consistent and re-theme automatically.
+ * ========================================================================== */
+
+@layer components {
+  .panel {
+    @apply rounded-xl border p-4;
+    background-color: var(--surface);
+    border-color: var(--border);
+  }
+
+  .field {
+    @apply rounded-lg px-3 py-2 text-sm outline-none transition-colors;
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .field:focus,
+  .field:focus-visible {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+
+  /* Neutral (secondary) button */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors;
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .btn:hover:not(:disabled) {
+    background-color: var(--surface-3);
+    border-color: var(--border-strong);
+  }
+  .btn:disabled {
+    @apply opacity-40;
+    cursor: default;
+  }
+
+  /* Primary (accent gradient) button */
+  .btn-accent {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-[filter,box-shadow];
+    background-image: var(--accent-gradient);
+    color: var(--accent-fg);
+    border: 1px solid transparent;
+    box-shadow: 0 6px 18px -6px var(--accent);
+  }
+  .btn-accent:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .btn-accent:disabled {
+    @apply opacity-40;
+    cursor: default;
+    box-shadow: none;
+  }
+
+  /* Outline accent button (e.g. "Generate summary") */
+  .btn-accent-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors;
+    background-color: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent-text);
+  }
+  .btn-accent-outline:hover:not(:disabled) {
+    background-color: var(--accent-soft);
+  }
+
+  .status-dot {
+    @apply inline-block h-2 w-2 rounded-full;
+  }
+}
+
+/* App-region helpers for the frameless title bar. */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Markdown rendering inside the transcript preview + summary panes. */
+.markdown {
+  @apply text-sm leading-relaxed;
+  color: var(--text);
+}
+.markdown h1 {
+  @apply text-xl font-semibold mt-4 mb-2;
+}
+.markdown h2 {
+  @apply text-lg font-semibold mt-3 mb-2;
+}
+.markdown h3 {
+  @apply text-base font-semibold mt-3 mb-1;
+}
+.markdown p {
+  @apply my-2;
+}
+.markdown ul {
+  @apply list-disc pl-6 my-2;
+}
+.markdown ol {
+  @apply list-decimal pl-6 my-2;
+}
+.markdown code {
+  @apply px-1 py-0.5 rounded text-xs;
+  background-color: var(--surface-2);
+}
+.markdown pre {
+  @apply p-3 rounded my-2 overflow-x-auto text-xs;
+  background-color: var(--surface-2);
+}
+.markdown pre code {
+  @apply p-0;
+  background-color: transparent;
+}
+.markdown blockquote {
+  @apply pl-3 italic;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
+}
+.markdown a {
+  @apply underline;
+  color: var(--accent-text);
+}
+
+/* Subtle scrollbars that fit the dark theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-3) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--surface-3);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
