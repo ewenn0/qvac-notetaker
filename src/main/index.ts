@@ -20,6 +20,7 @@ import {
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, extname, join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
+import { existsSync, mkdirSync } from 'node:fs'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 
 import { qvacService } from './qvacService.js'
@@ -404,12 +405,26 @@ function setupIpc(): void {
   // the format via the file extension.
   ipcMain.handle(
     Channels.SaveContent,
-    async (_e, args: { name: string; content: string }) => {
+    async (_e, args: { name: string; content: string; defaultDir?: string | null }) => {
       if (!mainWindow) return null
       const safe = (args.name || 'Untitled').replace(/[<>:"/\\|?*]/g, '_').trim() || 'Untitled'
+      // Open the dialog in the session's own folder ("YYYY-MM-DD Recording" or
+      // its renamed title). If that folder doesn't exist (or no session yet),
+      // fall back to the QVAC Notetaker/Recordings root, creating it so the
+      // dialog reliably lands there instead of the OS default (Downloads).
+      let saveDir = args.defaultDir && existsSync(args.defaultDir) ? args.defaultDir : null
+      if (!saveDir) {
+        const root = recordingsRoot()
+        try {
+          mkdirSync(root, { recursive: true })
+        } catch {
+          /* best-effort — fall back to the OS default if creation fails */
+        }
+        if (existsSync(root)) saveDir = root
+      }
       const res = await dialog.showSaveDialog(mainWindow, {
         title: 'Save',
-        defaultPath: `${safe}.md`,
+        defaultPath: saveDir ? join(saveDir, `${safe}.md`) : `${safe}.md`,
         filters: [
           { name: 'Markdown', extensions: ['md'] },
           { name: 'Plain text', extensions: ['txt'] },

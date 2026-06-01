@@ -32,8 +32,12 @@ export interface UseDocument {
   resetSpeakers: () => void
   /** Current label language (for the diarisation rebuild). */
   getLabelLanguage: () => string
-  /** Save a single section's content to a user-chosen file. */
-  saveContent: (name: string, content: string) => Promise<void>
+  /**
+   * Save a single section's content to a user-chosen file. `defaultDir`
+   * pre-selects the folder the Save dialog opens in (the current session
+   * folder); the main process falls back to the Recordings root if absent.
+   */
+  saveContent: (name: string, content: string, defaultDir?: string | null) => Promise<void>
 }
 
 /**
@@ -154,10 +158,10 @@ export function useDocument({
 
   // ---------------- Save ----------------
   const saveContent = useCallback(
-    async (name: string, content: string) => {
+    async (name: string, content: string, defaultDir?: string | null) => {
       setError(null)
       try {
-        const path = await window.notetakerAPI.saveContent(name, content)
+        const path = await window.notetakerAPI.saveContent(name, content, defaultDir)
         if (path) console.log('Saved to', path)
       } catch (e) {
         setError(`Save failed: ${(e as Error).message}`)

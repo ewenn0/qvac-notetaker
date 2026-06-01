@@ -73,8 +73,8 @@ const api = {
   rewriteDocument: (text: string, instructions?: string): Promise<{ contentText: string }> =>
     ipcRenderer.invoke(Channels.RewriteDocument, { text, instructions }),
 
-  saveContent: (name: string, content: string): Promise<string | null> =>
-    ipcRenderer.invoke(Channels.SaveContent, { name, content }),
+  saveContent: (name: string, content: string, defaultDir?: string | null): Promise<string | null> =>
+    ipcRenderer.invoke(Channels.SaveContent, { name, content, defaultDir }),
 
   /**
    * Auto-save a recording session: writes recording.wav + transcript.md into a

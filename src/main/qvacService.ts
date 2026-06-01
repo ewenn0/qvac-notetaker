@@ -764,7 +764,7 @@ export class QvacService extends EventEmitter {
     if (!this.llm) throw new Error('No LLM model loaded.')
     const sdk = await getSdk()
 
-    const systemPrompt =
+    let systemPrompt =
       scope === 'document'
         ? instructions ??
           'You are an expert note-taker. Summarise the following transcript into clear, ' +
@@ -773,6 +773,15 @@ export class QvacService extends EventEmitter {
         : instructions ??
           'Rewrite the following text to be clearer, more concise, and grammatically correct. ' +
             'Preserve the original meaning. Return only the rewritten text in Markdown.'
+
+    // Always match the transcript's language, regardless of which preset or
+    // custom instructions are in use. Appended after the (possibly
+    // user-supplied) instructions so it can't be accidentally dropped.
+    systemPrompt +=
+      '\n\nLANGUAGE: Always write your entire response in the same language as the ' +
+      'transcript below. If the transcript is in English, respond in English; if it is ' +
+      'in Russian, respond in Russian; and so on for any language. Never translate — ' +
+      'keep section headings and all prose in the transcript language.'
 
     // Qwen3 ships with <think> reasoning enabled by default. For a 0.6B model
     // on CPU the thinking phase alone can take >10s before a single content

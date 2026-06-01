@@ -18,7 +18,8 @@ export const DEFAULT_SUMMARY_INSTRUCTIONS =
   '## Key facts & numbers\n' +
   'Copy verbatim: names, dates, figures, URLs, version numbers.\n\n' +
   'Rules: no filler, no commentary, no "the speaker said". ' +
-  'Preserve technical terms exactly. If a section is empty, omit it entirely.'
+  'Preserve technical terms exactly. If a section is empty, omit it entirely. ' +
+  'Always write the summary in the same language as the transcript (never translate).'
 
 /**
  * Quick-pick recording-type presets.

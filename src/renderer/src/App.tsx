@@ -205,7 +205,11 @@ function App(): JSX.Element {
             audioUrl={recording.audioUrl}
             autoScroll={liveTranscriptScroll}
             onSave={() =>
-              void doc.saveContent(`${recording.recordingName || 'Untitled'} transcript`, doc.transcript)
+              void doc.saveContent(
+                `${recording.recordingName || 'Untitled'} transcript`,
+                doc.transcript,
+                recording.sessionDirRef.current
+              )
             }
           />
         </section>
@@ -218,7 +222,11 @@ function App(): JSX.Element {
             canGenerate={canRewrite}
             onGenerate={() => void doc.rewriteDocument()}
             onSave={() =>
-              void doc.saveContent(`${recording.recordingName || 'Untitled'} summary`, doc.summary)
+              void doc.saveContent(
+                `${recording.recordingName || 'Untitled'} summary`,
+                doc.summary,
+                recording.sessionDirRef.current
+              )
             }
           />
         </section>
