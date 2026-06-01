@@ -30,6 +30,21 @@ describe('parseDiarization', () => {
   it('returns empty array when nothing matches', () => {
     expect(parseDiarization('no segments here')).toEqual([])
   })
+
+  it('parses HH:MM:SS clock timestamps (SDK >= 0.12 GGUF format)', () => {
+    const out = parseDiarization(
+      'Speaker 0: 00:00:00 - 00:00:05\nSpeaker 1: 00:01:05 - 00:02:10'
+    )
+    expect(out).toEqual([
+      { speaker: 0, start: 0, end: 5 },
+      { speaker: 1, start: 65, end: 130 }
+    ])
+  })
+
+  it('parses fractional HH:MM:SS and MM:SS timestamps', () => {
+    const out = parseDiarization('Speaker 2: 01:05.50 - 01:06.00')
+    expect(out).toEqual([{ speaker: 2, start: 65.5, end: 66 }])
+  })
 })
 
 describe('flattenInt16', () => {

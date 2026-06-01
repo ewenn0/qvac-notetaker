@@ -21,23 +21,45 @@ export interface DiarSegmentWithText extends DiarSegment {
 }
 
 /**
+ * Convert a SortFormer timestamp token into seconds.
+ *
+ * Handles both shapes the engine has emitted across SDK versions:
+ *   - clock time `HH:MM:SS` / `MM:SS` (optionally fractional, `00:01:05.25`)
+ *   - bare seconds `12.5` or `12.5s`
+ */
+function parseDiarTimestamp(token: string): number {
+  if (token.includes(':')) {
+    // Right-to-left so `MM:SS` and `HH:MM:SS` both work: seconds, minutes, hours.
+    return token
+      .split(':')
+      .reduce((acc, part) => acc * 60 + Number.parseFloat(part), 0)
+  }
+  return Number.parseFloat(token)
+}
+
+/**
  * Parse SortFormer's text output into structured segments. The model
- * returns one line per turn formatted as
- *   `Speaker N: <start>s - <end>s`
+ * returns one line per turn. Across SDK versions the timestamp shape has
+ * varied, so we accept both:
+ *   `Speaker N: HH:MM:SS - HH:MM:SS`   (single-file GGUF, SDK ≥ 0.12)
+ *   `Speaker N: <start>s - <end>s`     (legacy composite ONNX models)
  * Lines that don't match are tolerated (some SDK versions interleave a
  * preamble or summary line). Segments are returned sorted by start time so
  * downstream slicing is monotonic.
  */
 export function parseDiarization(text: string): DiarSegment[] {
   const segs: DiarSegment[] = []
+  // Timestamp token = digits with optional `:` separators and a decimal
+  // point; a trailing `s` (seconds form) is consumed but not captured.
+  const line_re = /Speaker\s+(\d+):\s*([\d.:]+)s?\s*-+>?\s*([\d.:]+)s?/i
   for (const line of text.split('\n')) {
-    const m = line.match(/Speaker\s+(\d+):\s*([\d.]+)s\s*-\s*([\d.]+)s/i)
+    const m = line.match(line_re)
     if (m) {
-      segs.push({
-        speaker: Number(m[1]),
-        start: Number(m[2]),
-        end: Number(m[3])
-      })
+      const start = parseDiarTimestamp(m[2])
+      const end = parseDiarTimestamp(m[3])
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        segs.push({ speaker: Number(m[1]), start, end })
+      }
     }
   }
   return segs.sort((a, b) => a.start - b.start)
