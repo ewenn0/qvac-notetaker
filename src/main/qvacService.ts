@@ -666,7 +666,15 @@ export class QvacService extends EventEmitter {
         transcribe: (a: { modelId: string; audioChunk: string }) => Promise<string>
       }).transcribe({ modelId: sfModelId, audioChunk: wavPath })
 
+      // Diagnostic: surface exactly what SortFormer returned so a parse miss
+      // (format drift between SDK versions) is debuggable from the dev console.
+      console.error(
+        `[qvac] SortFormer raw output (${diarText?.length ?? 0} chars):\n` +
+          JSON.stringify(diarText)
+      )
+
       const segments = parseDiarization(diarText)
+      console.error(`[qvac] parsed ${segments.length} diarisation segment(s)`)
       if (segments.length === 0) {
         throw new Error(
           'SortFormer did not detect any speaker segments. The recording may be too short or too quiet.'
