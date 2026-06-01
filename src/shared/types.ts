@@ -26,11 +26,14 @@ export interface ModelOption {
 }
 
 /**
- * STT option ids. Whisper / Whisper-Large ids must match named exports of
- * `@qvac/sdk` exactly (resolved at runtime in `qvacService.ts`). The two
- * `PARAKEET_*` ids below are *presets*, not single SDK constants — they
- * tell the main process to assemble a composite parakeet model from
- * encoder + decoder + vocab + preprocessor exports.
+ * STT option ids. Each id must match a named export of `@qvac/sdk` exactly
+ * (resolved at runtime in `qvacService.ts`).
+ *
+ * As of @qvac/sdk 0.12 the Parakeet models ship as single-file GGUFs — the
+ * engine auto-detects TDT/CTC/Sortformer/EOU from the file's metadata — so
+ * the two `PARAKEET_*` ids below are now plain SDK constants (Q8 quant),
+ * just like Whisper, rather than composite encoder/decoder/vocab presets.
+ * The Q8 GGUFs are a touch smaller on disk than the old FP32 component set.
  */
 export const STT_MODELS: ModelOption[] = [
   { id: 'WHISPER_TINY', label: 'Whisper Tiny (multilingual)', kind: 'stt', sizeHint: '~75 MB', streaming: true },
@@ -38,8 +41,8 @@ export const STT_MODELS: ModelOption[] = [
   { id: 'WHISPER_SMALL_Q8_0', label: 'Whisper Small Q8 (multilingual)', kind: 'stt', sizeHint: '~260 MB', streaming: true },
   { id: 'WHISPER_EN_BASE_Q8_0', label: 'Whisper Base Q8 (English)', kind: 'stt', sizeHint: '~80 MB', streaming: true },
   { id: 'WHISPER_LARGE_V3_TURBO', label: 'Whisper Large v3 Turbo', kind: 'stt', sizeHint: '~1.5 GB', streaming: true },
-  { id: 'PARAKEET_CTC', label: 'Parakeet CTC (EN, streaming)', kind: 'stt', sizeHint: '~750 MB', streaming: true },
-  { id: 'PARAKEET_TDT', label: 'Parakeet TDT (EN, batch)', kind: 'stt', sizeHint: '~750 MB', streaming: false }
+  { id: 'PARAKEET_CTC_0_6B_Q8_0', label: 'Parakeet CTC Q8 (EN, streaming)', kind: 'stt', sizeHint: '~700 MB', streaming: true },
+  { id: 'PARAKEET_TDT_0_6B_V3_Q8_0', label: 'Parakeet TDT v3 Q8 (EN, batch)', kind: 'stt', sizeHint: '~715 MB', streaming: false }
 ]
 
 export const LLM_MODELS: ModelOption[] = [

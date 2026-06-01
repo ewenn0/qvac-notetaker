@@ -15,6 +15,9 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelKind, Device, ModelLoadProgress, TranscriptDelta } from '@shared/types'
+// Type-only imports — erased at compile time, so they never break the
+// "boot without the SDK installed" path that `getSdk()` guards.
+import type { LoadModelOptions, ModelProgressUpdate } from '@qvac/sdk'
 import {
   parseDiarization,
   flattenInt16,
@@ -73,46 +76,24 @@ async function resolveSimpleModelSrc(modelOptionId: string): Promise<unknown> {
 }
 
 /**
- * Parakeet models are composite: the SDK ships separate encoder/decoder/vocab
- * (and tokenizer/preprocessor) constants. The UI exposes two presets,
- * PARAKEET_TDT (batch) and PARAKEET_CTC (streaming), and we assemble the right
- * `modelConfig` here.
+ * Parakeet single-file GGUF constants (@qvac/sdk 0.12).
+ *
+ * The engine auto-detects the variant (TDT / CTC / Sortformer / EOU) from
+ * each GGUF's metadata, so every Parakeet model is a single `modelSrc` load
+ * with `modelType: 'parakeet'` — no more encoder/decoder/vocab/preprocessor
+ * (or CTC model + tokenizer) component bundles. Passing the old composite
+ * `parakeet*Src` / inner `modelType` fields now throws
+ * `LegacyParakeetModelDeprecatedError`.
  */
-interface ParakeetBundle {
-  modelSrc: unknown
-  modelConfig: Record<string, unknown>
-}
+const PARAKEET_TDT = 'PARAKEET_TDT_0_6B_V3_Q8_0'
+const PARAKEET_SORTFORMER = 'PARAKEET_SORTFORMER_4SPK_V1_Q8_0'
 
-async function resolveParakeetBundle(presetId: string): Promise<ParakeetBundle> {
-  const sdk = await getSdk()
-  if (presetId === 'PARAKEET_TDT') {
-    const encoder = sdkExport(sdk, 'PARAKEET_TDT_ENCODER_FP32')
-    const decoder = sdkExport(sdk, 'PARAKEET_TDT_DECODER_FP32')
-    const vocab = sdkExport(sdk, 'PARAKEET_TDT_VOCAB')
-    const preprocessor = sdkExport(sdk, 'PARAKEET_TDT_PREPROCESSOR_FP32')
-    return {
-      modelSrc: encoder,
-      modelConfig: {
-        parakeetEncoderSrc: encoder,
-        parakeetDecoderSrc: decoder,
-        parakeetVocabSrc: vocab,
-        parakeetPreprocessorSrc: preprocessor
-      }
-    }
-  }
-  if (presetId === 'PARAKEET_CTC') {
-    const ctcModel = sdkExport(sdk, 'PARAKEET_CTC_FP32')
-    const tokenizer = sdkExport(sdk, 'PARAKEET_CTC_TOKENIZER')
-    return {
-      modelSrc: ctcModel,
-      modelConfig: {
-        modelType: 'ctc',
-        parakeetCtcModelSrc: ctcModel,
-        parakeetTokenizerSrc: tokenizer
-      }
-    }
-  }
-  throw new Error(`Unknown Parakeet preset "${presetId}". Use PARAKEET_TDT or PARAKEET_CTC.`)
+/**
+ * Batch-only TDT model — the SDK refuses to stream it. Streaming-capable
+ * Parakeet (the CTC GGUF, `PARAKEET_CTC_0_6B_Q8_0`) is everything else.
+ */
+function isParakeetBatch(optionId: string): boolean {
+  return optionId.startsWith('PARAKEET_TDT')
 }
 
 export interface LoadedModel {
@@ -273,15 +254,17 @@ export class QvacService extends EventEmitter {
 
     const useGpu = this.device === 'gpu'
 
-    // Parakeet is composite (encoder + decoder + vocab/tokenizer + preprocessor)
-    // so we have to build modelConfig from a bundle of SDK constants. Whisper
-    // and LLM take a single modelSrc.
+    // Every model kind now takes a single `modelSrc`. Parakeet used to be
+    // composite (encoder + decoder + vocab/tokenizer + preprocessor); as of
+    // SDK 0.12 it ships as one GGUF whose metadata tells the engine which
+    // variant it is, so it loads exactly like Whisper/LLM.
     let modelSrc: unknown
     let modelConfig: Record<string, unknown>
     if (modelType === 'parakeet') {
-      const bundle = await resolveParakeetBundle(optionId)
-      modelSrc = bundle.modelSrc
-      modelConfig = bundle.modelConfig
+      modelSrc = await resolveSimpleModelSrc(optionId)
+      // Only hint the device — TDT/CTC/Sortformer/EOU is auto-detected from
+      // the GGUF. Passing any legacy `parakeet*Src` field would now throw.
+      modelConfig = { useGPU: useGpu }
     } else if (modelType === 'llm') {
       // llama.cpp needs BOTH `device: 'gpu'` AND `gpu_layers > 0` to actually
       // offload to the GPU; setting only `device` quietly keeps every layer
@@ -326,34 +309,28 @@ export class QvacService extends EventEmitter {
       }
     }
 
+    // SDK 0.12's `LoadModelOptions` accepts exactly this `{ modelSrc,
+    // modelType, modelConfig, onProgress }` shape, so the old "widen through
+    // unknown" hack is gone. The single `as LoadModelOptions` only narrows
+    // our deliberately-loose `modelSrc: unknown` / `modelConfig:
+    // Record<string, unknown>` (we resolve those generically by export name)
+    // back to the SDK's typed union.
     const modelId = await sdk.loadModel({
       modelSrc,
       modelType,
       modelConfig,
-      onProgress: (p: { percentage?: number; status?: unknown }) => {
+      onProgress: (p: ModelProgressUpdate) => {
         const pct = typeof p.percentage === 'number' ? p.percentage : 0
         const state: ModelLoadProgress['state'] = pct < 100 ? 'downloading' : 'loading'
-        this.emitProgress({
-          kind,
-          modelOptionId: optionId,
-          percentage: pct,
-          state,
-          message: stringifyProgressStatus(p.status)
-        })
+        this.emitProgress({ kind, modelOptionId: optionId, percentage: pct, state })
       }
-      // The installed @qvac/sdk ("latest") publishes a loadModel param type
-      // that diverges from the runtime contract this code targets (it types a
-      // `modelId` field where the engine actually accepts our `modelSrc` +
-      // `modelConfig` bundle). The shapes no longer overlap enough for a direct
-      // cast (TS2352), so we widen through `unknown` — the documented escape
-      // hatch — to assert the runtime shape we know the SDK accepts.
-    } as unknown as Parameters<typeof sdk.loadModel>[0])
+    } as LoadModelOptions)
 
     const loaded: LoadedModel = { modelId, optionId, kind, modelType }
     if (kind === 'stt') this.stt = loaded
     else this.llm = loaded
 
-    const sizeBytes = await this.resolveModelSize(sdk, optionId, modelType).catch(() => undefined)
+    const sizeBytes = await this.resolveModelSize(sdk, optionId).catch(() => undefined)
     this.emitProgress({
       kind,
       modelOptionId: optionId,
@@ -367,44 +344,26 @@ export class QvacService extends EventEmitter {
   /**
    * Look up the on-disk size of a loaded model via the SDK's catalog.
    *
-   * Single-file models (whisper, llm) map 1:1 to a registry entry. Parakeet
-   * is composite — we sum the sizes of every component file. We prefer
-   * `actualSize` (what's actually on disk) and fall back to `expectedSize`.
+   * Every model kind (whisper, parakeet, llm) is now a single-file GGUF that
+   * maps 1:1 to a registry entry keyed by the SDK export name, so this is a
+   * single lookup. We prefer `actualSize` (what's on disk) and fall back to
+   * `expectedSize`.
    */
   private async resolveModelSize(
     sdk: QvacModule,
-    optionId: string,
-    modelType: 'whisper' | 'parakeet' | 'llm'
+    optionId: string
   ): Promise<number | undefined> {
-    const lookup = async (name: string): Promise<number | undefined> => {
-      try {
-        const info = (await (sdk as unknown as {
-          getModelInfo: (a: { name: string }) => Promise<{
-            actualSize?: number
-            expectedSize?: number
-          }>
-        }).getModelInfo({ name })) as { actualSize?: number; expectedSize?: number }
-        return info.actualSize ?? info.expectedSize
-      } catch {
-        return undefined
-      }
+    try {
+      const info = (await (sdk as unknown as {
+        getModelInfo: (a: { name: string }) => Promise<{
+          actualSize?: number
+          expectedSize?: number
+        }>
+      }).getModelInfo({ name: optionId })) as { actualSize?: number; expectedSize?: number }
+      return info.actualSize ?? info.expectedSize
+    } catch {
+      return undefined
     }
-
-    if (modelType !== 'parakeet') return lookup(optionId)
-
-    const componentNames =
-      optionId === 'PARAKEET_TDT'
-        ? [
-            'PARAKEET_TDT_ENCODER_FP32',
-            'PARAKEET_TDT_DECODER_FP32',
-            'PARAKEET_TDT_VOCAB',
-            'PARAKEET_TDT_PREPROCESSOR_FP32'
-          ]
-        : ['PARAKEET_CTC_FP32', 'PARAKEET_CTC_TOKENIZER']
-
-    const sizes = await Promise.all(componentNames.map(lookup))
-    const total = sizes.reduce<number>((sum, s) => sum + (s ?? 0), 0)
-    return total > 0 ? total : undefined
   }
 
   async unload(kind: ModelKind): Promise<void> {
@@ -443,8 +402,8 @@ export class QvacService extends EventEmitter {
     this.audioBuffer = []
     this.audioBufferSamples = 0
 
-    // PARAKEET_TDT is a batch model — the SDK throws if asked to stream it.
-    if (this.stt.modelType === 'parakeet' && this.stt.optionId === 'PARAKEET_TDT') {
+    // Parakeet TDT is a batch model — the SDK throws if asked to stream it.
+    if (this.stt.modelType === 'parakeet' && isParakeetBatch(this.stt.optionId)) {
       throw new Error(
         'Parakeet TDT is a batch-only model and cannot be live-recorded. ' +
           'Use Whisper or Parakeet CTC for live recording, or "Load audio…" to ' +
@@ -455,7 +414,7 @@ export class QvacService extends EventEmitter {
     const params: Record<string, unknown> = {
       modelId: this.stt.modelId
     }
-    if (this.stt.modelType === 'parakeet' && this.stt.optionId === 'PARAKEET_CTC') {
+    if (this.stt.modelType === 'parakeet' && !isParakeetBatch(this.stt.optionId)) {
       params.parakeetStreamingConfig = {
         chunkMs: 1000,
         leftContextMs: 500,
@@ -628,9 +587,9 @@ export class QvacService extends EventEmitter {
    *
    * Pipeline (mirrors `node_modules/@qvac/sdk/dist/examples/transcription/parakeet-sortformer.js`):
    *   1. Flatten the buffered Int16 PCM into a 16 kHz mono WAV file.
-   *   2. Load PARAKEET_SORTFORMER_FP32 and run a one-shot transcribe on the
-   *      file — it returns lines like "Speaker 0: 1.23s - 4.56s".
-   *   3. Load PARAKEET_TDT and transcribe each segment slice in turn.
+   *   2. Load the Sortformer GGUF and run a one-shot transcribe on the file
+   *      — it returns lines like "Speaker 0: 1.23s - 4.56s".
+   *   3. Load the Parakeet TDT GGUF and transcribe each segment slice in turn.
    *   4. Merge consecutive same-speaker slices into one block.
    *
    * Both models are loaded *temporarily* — the user's previously-loaded
@@ -661,7 +620,8 @@ export class QvacService extends EventEmitter {
     const restore = this.stt
       ? { optionId: this.stt.optionId, language: this.lastSttLanguage }
       : null
-    const existingTdt = this.stt?.optionId === 'PARAKEET_TDT' ? this.stt : null
+    const existingTdt = this.stt && isParakeetBatch(this.stt.optionId) ? this.stt : null
+    const useGpu = this.device === 'gpu'
 
     try {
       // 2. SortFormer pass — segments only.
@@ -669,7 +629,7 @@ export class QvacService extends EventEmitter {
       // SortFormer stays resident across runs; only (re)load when we have no
       // cached handle or the files were removed from disk since last time.
       let sfModelId = this.diarSortformerId
-      if (sfModelId && (await this.modelFilesPresent(['PARAKEET_SORTFORMER_FP32']))) {
+      if (sfModelId && (await this.modelFilesPresent([PARAKEET_SORTFORMER]))) {
         onProgress('Using cached SortFormer…')
       } else {
         if (sfModelId) {
@@ -681,16 +641,15 @@ export class QvacService extends EventEmitter {
           this.diarSortformerId = null
         }
         onProgress('Loading SortFormer (speaker boundaries)…')
-        const sortformerSrc = sdkExport(sdk, 'PARAKEET_SORTFORMER_FP32')
+        // Single-file GGUF: the engine recognises this as a Sortformer model
+        // from its metadata — no `modelType: 'sortformer'` / `parakeetSortformerSrc`.
+        const sortformerSrc = sdkExport(sdk, PARAKEET_SORTFORMER)
         sfModelId = await (sdk as unknown as {
           loadModel: (a: unknown) => Promise<string>
         }).loadModel({
           modelSrc: sortformerSrc,
           modelType: 'parakeet',
-          modelConfig: {
-            modelType: 'sortformer',
-            parakeetSortformerSrc: sortformerSrc
-          }
+          modelConfig: { useGPU: useGpu }
         })
         this.diarSortformerId = sfModelId
       }
@@ -707,16 +666,10 @@ export class QvacService extends EventEmitter {
       }
 
       // 3. Parakeet TDT pass — transcribe each slice.
-      const tdtComponents = [
-        'PARAKEET_TDT_ENCODER_FP32',
-        'PARAKEET_TDT_DECODER_FP32',
-        'PARAKEET_TDT_VOCAB',
-        'PARAKEET_TDT_PREPROCESSOR_FP32'
-      ]
       let tdtModelId = existingTdt?.modelId
       if (tdtModelId) {
         onProgress('Using loaded Parakeet TDT (per-segment transcription)…')
-      } else if (this.diarTdtId && (await this.modelFilesPresent(tdtComponents))) {
+      } else if (this.diarTdtId && (await this.modelFilesPresent([PARAKEET_TDT]))) {
         tdtModelId = this.diarTdtId
         onProgress('Using cached Parakeet TDT (per-segment transcription)…')
       } else {
@@ -729,13 +682,14 @@ export class QvacService extends EventEmitter {
           this.diarTdtId = null
         }
         onProgress('Loading Parakeet TDT (per-segment transcription)…')
-        const tdtBundle = await resolveParakeetBundle('PARAKEET_TDT')
+        // Single-file GGUF, same as the live STT path.
+        const tdtSrc = sdkExport(sdk, PARAKEET_TDT)
         tdtModelId = await (sdk as unknown as {
           loadModel: (a: unknown) => Promise<string>
         }).loadModel({
-          modelSrc: tdtBundle.modelSrc,
+          modelSrc: tdtSrc,
           modelType: 'parakeet',
-          modelConfig: tdtBundle.modelConfig
+          modelConfig: { useGPU: useGpu }
         })
         this.diarTdtId = tdtModelId
       }
