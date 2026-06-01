@@ -49,6 +49,7 @@ export const LLM_MODELS: ModelOption[] = [
   { id: 'QWEN3_600M_INST_Q4', label: 'Qwen3 0.6B Instruct Q4', kind: 'llm', sizeHint: '~450 MB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
   { id: 'LLAMA_3_2_1B_INST_Q4_0', label: 'Llama 3.2 1B Instruct Q4', kind: 'llm', sizeHint: '~770 MB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
   { id: 'QWEN3_1_7B_INST_Q4', label: 'Qwen3 1.7B Instruct Q4', kind: 'llm', sizeHint: '~1.1 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
+  { id: 'GEMMA4_2B_MULTIMODAL_Q4_K_M', label: 'Gemma 4 2B Instruct Q4', kind: 'llm', sizeHint: '~3.2 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
   { id: 'QWEN3_4B_INST_Q4_K_M', label: 'Qwen3 4B Instruct Q4', kind: 'llm', sizeHint: '~2.5 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 }
 ]
 
