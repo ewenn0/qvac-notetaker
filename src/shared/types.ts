@@ -72,6 +72,12 @@ export interface RuntimeStats {
   /** Approximate count of tokens currently held in the KV cache. */
   cacheTokens?: number
   /**
+   * Real prompt (context) token count from the most recent LLM completion,
+   * read from the SDK's `stats.promptTokens`. This is the actual context
+   * usage, as opposed to the `cacheTokens` heuristic.
+   */
+  promptTokens?: number
+  /**
    * STT end-to-end latency (ms): wall-clock time between the most recent
    * audio chunk being pushed and the next transcript segment being emitted.
    * Includes VAD pause-detection lookahead plus decode time.

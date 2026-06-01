@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import type { ModelKind, Device, ModelLoadProgress, TranscriptDelta } from '@shared/types'
 // Type-only imports — erased at compile time, so they never break the
 // "boot without the SDK installed" path that `getSdk()` guards.
-import type { LoadModelOptions, ModelProgressUpdate } from '@qvac/sdk'
+import type { LoadModelOptions, ModelProgressUpdate, ContextOverflowError } from '@qvac/sdk'
 import {
   parseDiarization,
   flattenInt16,
@@ -162,6 +162,12 @@ export class QvacService extends EventEmitter {
   private lastLlmCtxSize = 8192
   /** Approximate cumulative KV-cache token count, updated when the LLM emits stats. */
   private cacheTokens = 0
+  /**
+   * Real prompt (context) token count from the most recent LLM completion,
+   * read straight from the SDK's `stats.promptTokens`. Replaces the
+   * approximate `cacheTokens` heuristic as the displayed "context usage".
+   */
+  private lastPromptTokens?: number
   /** Last TTFT (ms) measured for an LLM completion. */
   private lastTtftMs?: number
   private lastTokensPerSecond?: number
@@ -197,6 +203,7 @@ export class QvacService extends EventEmitter {
     lastTtftMs?: number
     lastTokensPerSecond?: number
     cacheTokens: number
+    promptTokens?: number
     lastSttLatencyMs?: number
     sttModelLoaded: boolean
     llmModelLoaded: boolean
@@ -206,6 +213,7 @@ export class QvacService extends EventEmitter {
       lastTtftMs: this.lastTtftMs,
       lastTokensPerSecond: this.lastTokensPerSecond,
       cacheTokens: this.cacheTokens,
+      promptTokens: this.lastPromptTokens,
       lastSttLatencyMs: this.lastSttLatencyMs,
       sttModelLoaded: this.stt !== null,
       llmModelLoaded: this.llm !== null
@@ -787,9 +795,12 @@ export class QvacService extends EventEmitter {
         events: AsyncIterable<{
           type: string
           text?: string
-          stats?: { tokensPerSecond?: number; cacheTokens?: number; contextTokens?: number }
+          stats?: { tokensPerSecond?: number; cacheTokens?: number; promptTokens?: number }
         }>
-        final: Promise<{ contentText: string; stats?: { tokensPerSecond?: number; cacheTokens?: number } }>
+        final: Promise<{
+          contentText: string
+          stats?: { tokensPerSecond?: number; cacheTokens?: number; promptTokens?: number }
+        }>
       }
     }).completion({
       modelId: this.llm.modelId,
@@ -798,40 +809,72 @@ export class QvacService extends EventEmitter {
       kvCache: true
     })
 
-    for await (const event of result.events) {
-      if (event.type === 'contentDelta' && event.text) {
-        if (firstTokenAt === undefined) {
-          firstTokenAt = performance.now()
-          // Lock in TTFT the moment the first token lands so the runtime
-          // panel can show a number while the model is still streaming.
-          this.lastTtftMs = firstTokenAt - startedAt
+    try {
+      for await (const event of result.events) {
+        if (event.type === 'contentDelta' && event.text) {
+          if (firstTokenAt === undefined) {
+            firstTokenAt = performance.now()
+            // Lock in TTFT the moment the first token lands so the runtime
+            // panel can show a number while the model is still streaming.
+            this.lastTtftMs = firstTokenAt - startedAt
+            this.emit('stats')
+          }
+          buffer += event.text
+          onDelta(event.text)
+        } else if (event.type === 'completionStats' && event.stats) {
+          if (typeof event.stats.tokensPerSecond === 'number') {
+            this.lastTokensPerSecond = event.stats.tokensPerSecond
+          }
+          if (typeof event.stats.promptTokens === 'number') {
+            this.lastPromptTokens = event.stats.promptTokens
+          }
+          if (typeof event.stats.cacheTokens === 'number') {
+            this.cacheTokens = event.stats.cacheTokens
+          }
           this.emit('stats')
         }
-        buffer += event.text
-        onDelta(event.text)
-      } else if (event.type === 'completionStats' && event.stats) {
-        if (typeof event.stats.tokensPerSecond === 'number') {
-          this.lastTokensPerSecond = event.stats.tokensPerSecond
-        }
-        if (typeof event.stats.cacheTokens === 'number') {
-          this.cacheTokens = event.stats.cacheTokens
-        } else if (typeof event.stats.contextTokens === 'number') {
-          this.cacheTokens = event.stats.contextTokens
-        }
-        this.emit('stats')
       }
-    }
 
-    const final = await result.final
-    if (final.stats?.tokensPerSecond) this.lastTokensPerSecond = final.stats.tokensPerSecond
-    if (final.stats?.cacheTokens) this.cacheTokens = final.stats.cacheTokens
-    this.emit('stats')
+      const final = await result.final
+      if (final.stats?.tokensPerSecond) this.lastTokensPerSecond = final.stats.tokensPerSecond
+      if (typeof final.stats?.promptTokens === 'number') {
+        this.lastPromptTokens = final.stats.promptTokens
+      }
+      if (final.stats?.cacheTokens) this.cacheTokens = final.stats.cacheTokens
+      this.emit('stats')
 
-    return {
-      contentText: final.contentText ?? buffer,
-      tokensPerSecond: this.lastTokensPerSecond,
-      ttftMs: this.lastTtftMs
+      return {
+        contentText: final.contentText ?? buffer,
+        tokensPerSecond: this.lastTokensPerSecond,
+        ttftMs: this.lastTtftMs
+      }
+    } catch (err) {
+      // The prompt was too big for the model's context window. Turn the
+      // SDK's typed error into an actionable message (it survives the worker
+      // RPC boundary, so `instanceof` is reliable) and let it propagate
+      // through the existing rewrite IPC -> error-banner path.
+      if (err instanceof sdk.ContextOverflowError) {
+        throw new Error(this.describeContextOverflow(err))
+      }
+      throw err
     }
+  }
+
+  /**
+   * Build a user-facing message for a `ContextOverflowError`. The error
+   * carries `promptTokens` / `ctxSize` when the addon reported them; we fall
+   * back to the last context size we configured the LLM with otherwise.
+   */
+  private describeContextOverflow(err: ContextOverflowError): string {
+    const ctx = err.ctxSize ?? this.lastLlmCtxSize
+    const promptPart =
+      typeof err.promptTokens === 'number'
+        ? `Transcript ~${err.promptTokens} tokens`
+        : 'The transcript'
+    return (
+      `${promptPart} exceeds the ${ctx}-token context window — ` +
+      'raise the context size in Summary settings, or shorten the transcript.'
+    )
   }
 
   /**

@@ -48,7 +48,10 @@ export function RuntimePanel({ device, setDevice, stats, audioLevel }: RuntimePa
 
       <Stat label="Last TTFT" value={fmt(stats.lastTtftMs, ' ms')} />
       <Stat label="Last tok/s" value={fmt(stats.lastTokensPerSecond, ' tok/s')} />
-      <Stat label="Cache tokens" value={stats.cacheTokens != null ? String(stats.cacheTokens) : NO_VALUE} />
+      <Stat
+        label="Context tokens"
+        value={stats.promptTokens != null ? String(stats.promptTokens) : NO_VALUE}
+      />
 
       <div>
         <span className="text-xs text-muted">Input level</span>
