@@ -83,11 +83,21 @@ export class AudioCapture {
     // Chromium will resample for us when we request it as targetSampleRate.
     this.context = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE })
 
-    // Inject the worklet.
+    // Inject the worklet. The processor is registered from a Blob URL, which
+    // Chromium enforces against the page's `script-src` CSP. If `blob:` is
+    // missing there (e.g. a misconfigured production policy), `addModule`
+    // rejects with a bare AbortError ("The user aborted a request") — wrap it
+    // so the failure is actionable instead of opaque.
     const blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' })
     const url = URL.createObjectURL(blob)
     try {
       await this.context.audioWorklet.addModule(url)
+    } catch (e) {
+      const err = e as Error
+      throw new Error(
+        `Audio worklet failed to load (${err?.name ?? 'Error'}): ${err?.message ?? String(e)}. ` +
+          "This usually means the app's content-security-policy is blocking blob: scripts."
+      )
     } finally {
       URL.revokeObjectURL(url)
     }

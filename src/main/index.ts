@@ -65,7 +65,12 @@ function installCspHeaders(): void {
 
   const prodCsp =
     "default-src 'self'; " +
-    "script-src 'self'; " +
+    // `blob:` is required so the AudioWorklet PCM processor (registered from a
+    // Blob URL in audioCapture.ts) can load. Chromium enforces worklet module
+    // scripts against `script-src`; without `blob:` here `addModule()` rejects
+    // with an AbortError ("The user aborted a request") and recording fails in
+    // packaged builds, even though it works in dev (dev CSP already allows it).
+    "script-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob:; " +
     "media-src 'self' blob:; " +
