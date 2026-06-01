@@ -1,0 +1,64 @@
+appId: io.notetaker.qvac
+productName: QVAC Notetaker
+# Backfill the QVAC bare-runtime worker's dynamically-resolved dependency
+# tree, which electron-builder cannot trace and otherwise prunes away.
+afterPack: scripts/afterPack.cjs
+# Icons are auto-detected from buildResources: build/icon.ico (win),
+# build/icon.icns (mac), build/icon.png (linux). See build/README.md.
+directories:
+  buildResources: build
+  output: dist
+files:
+  - "!**/.vscode/*"
+  - "!src/*"
+  - "!electron.vite.config.{js,ts,mjs,cjs}"
+  - "!{.eslintrc.cjs,eslint.config.mjs,.prettierrc.json,.prettierignore,tsconfig.json,tsconfig.*.json}"
+  - "!{.github,test,scripts}/**"
+  - "!**/*.{test,spec}.{ts,tsx}"
+  - "!vitest.config.*"
+# The QVAC SDK spawns a separate "bare" runtime worker (bare.exe) that loads
+# its plugins and native addons by reading real files from disk. That runtime
+# is NOT asar-aware, so packing the app into app.asar stops the worker from
+# starting and STT/LLM loads time out (RPC init timeout). Ship unpacked so the
+# worker can resolve its whole dependency tree (@qvac/*, bare-*, native addons)
+# from plain files, exactly as it does in dev.
+asar: false
+win:
+  executableName: QVAC Notetaker
+  # Code signing is driven by environment variables so secrets never live in
+  # the repo. electron-builder reads CSC_LINK (path/URL to a .pfx) and
+  # CSC_KEY_PASSWORD automatically; unset them for an unsigned local build.
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  artifactName: ${productName}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  category: public.app-category.productivity
+  # Hardened runtime + notarization are required for distribution outside the
+  # App Store on macOS 10.15+. Provide APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+  # and APPLE_TEAM_ID in the environment to enable notarization at build time.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+  target:
+    - dmg
+linux:
+  target:
+    - AppImage
+  category: Office
+# Auto-update feed. electron-updater pulls release metadata from here; the
+# build also publishes update artifacts to the same target when run with
+# `--publish`. Replace owner/repo with the real repository before shipping.
+publish:
+  - provider: github
+    owner: ewenn0
+    repo: qvac-notetaker
