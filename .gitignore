@@ -2,6 +2,7 @@ node_modules
 out
 dist
 .vite
+*.tsbuildinfo
 .DS_Store
 *.log
 .vscode

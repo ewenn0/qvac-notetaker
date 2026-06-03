@@ -19,13 +19,21 @@ summarise the transcript. No data leaves your machine.
   when generated (see [Recordings & storage](#recordings--storage))
 - **Auto-title** — generating a summary asks the LLM for a concise title, renames
   the note to `YYYY-MM-DD: Title`, and renames its folder to match
-- **Speaker diarisation** ("Detect speakers") via SortFormer + Parakeet TDT; the
-  diarisation models stay loaded after first use for fast repeat runs
-- Save (Markdown) of either pane to a location you pick
+- **Speaker diarisation** ("Detect speakers") via streaming SortFormer v2.1
+  (AOSC) + Parakeet TDT. The streaming model handles **hour-plus recordings**
+  with flat memory use and keeps speaker IDs stable across the whole session;
+  the diarisation models stay loaded after first use for fast repeat runs
+  (see [Speaker diarisation](#speaker-diarisation))
+- **Language-matched summaries** — the LLM summarises in the transcript's own
+  language (English in → English out, Russian in → Russian out, …)
+- **Context-overflow handling** — oversized transcripts surface a clear message
+  instead of a cryptic SDK error
+- Save (Markdown) of either pane — the dialog opens in the active session folder
 - STT model picker with download/load progress bar (Whisper Tiny / Base Q8 /
-  Small Q8 / EN Base Q8 / Large v3 Turbo, Parakeet CTC, Parakeet TDT)
-- LLM picker with the same UI (Qwen3 0.6B / 1.7B / 4B, Llama 3.2 1B)
-- AI runtime panel: CPU/GPU toggle, last TTFT, last tok/s, KV-cache tokens
+  Small Q8 / EN Base Q8 / Large v3 Turbo; Parakeet CTC for live streaming;
+  Parakeet TDT for batch file transcription)
+- LLM picker with the same UI (Qwen3 0.6B / 1.7B / 4B, Llama 3.2 1B, Gemma 4 2B)
+- AI runtime panel: CPU/GPU toggle, last TTFT, last tok/s, prompt/context tokens
 - Two synchronised text panes: live transcript (editable, Markdown) and summary
 - Background **auto-update** in packaged builds (electron-updater)
 
@@ -107,6 +115,46 @@ Every recording session is auto-saved to its own folder under:
 Filenames are sanitised for Windows/macOS/Linux (the colon in the display name
 is never used in folder names).
 
+## Speaker diarisation
+
+Clicking **Detect speakers** runs an offline pass over the recorded audio:
+
+1. **SortFormer v2.1 (streaming/AOSC)** assigns speaker turns. It is loaded with
+   `streaming: true`, so the engine processes a bounded rolling window via
+   `feed_pcm_f32()` instead of the offline encoder. That keeps memory flat
+   regardless of length (40–90 min recordings work) and the AOSC speaker cache
+   keeps speaker IDs stable across the whole session. The earlier offline path
+   attempted a single full-clip encode and ran out of GPU memory on long audio.
+2. The raw turns (emitted as `Speaker N: HH:MM:SS - HH:MM:SS`) are parsed and
+   **coalesced** into coherent turns so we don't fire one transcription per
+   ~2 s micro-chunk.
+3. **Parakeet TDT** transcribes each turn; consecutive same-speaker turns are
+   merged into readable paragraphs.
+
+Both diarisation models stay resident after first use for fast repeat runs.
+
+> Streaming PCM that the app feeds to the Parakeet engine must be **s16le**
+> (the addon's duplex pump always interprets bytes as signed 16-bit), whereas
+> Whisper streaming expects **f32le**. The app sends the right layout per
+> engine — relevant if you extend the live/diarisation pipeline.
+
+## SDK plugins & footprint
+
+The QVAC SDK ships ten inference plugins, but this app only uses three (LLM,
+Whisper, Parakeet). To avoid shipping/initialising the rest:
+
+- `qvac/worker.entry.mjs` is a custom bare-runtime worker entry that registers
+  **only** the LLM, Whisper, and Parakeet plugins. It is auto-discovered ahead
+  of the SDK's default worker, so the unused plugins' native addons are never
+  imported.
+- `qvac.config.json` declares the same plugin set (build/forward-compat).
+- `scripts/prune-modules.cjs` (run via `npm run slim`, and automatically on
+  `postinstall`) deletes foreign-platform prebuilds, source maps, **and** the
+  seven unused `@qvac/*` native addon packages — saving hundreds of MB on disk.
+
+If you start using another plugin (translation, embeddings, OCR, TTS, …), add
+it to all three places and run `npm run reinstall`.
+
 ## Auto-update
 
 Packaged production builds check the GitHub release feed declared under
@@ -142,7 +190,10 @@ silently drops the captured video track — we only use the audio.
 - `src/main/autoUpdater.ts` — electron-updater wiring (production only).
 - `src/renderer/src/lib/audioCapture.ts` — `AudioWorklet` resampler and stream mixer.
 - `src/shared/types.ts` — IPC channel names and the model option catalog.
+- `qvac/worker.entry.mjs` — custom bare worker registering only the 3 used plugins.
+- `qvac.config.json` — declarative plugin selection (build/forward-compat).
 - `scripts/afterPack.cjs` — backfills the bare-runtime dependency tree at build time.
+- `scripts/prune-modules.cjs` — slims `node_modules` (foreign prebuilds + unused addons).
 - `scripts/patch-bare-spawn.cjs` — hides the worker's console window on Windows.
 
 ## Updating model catalog
@@ -164,6 +215,9 @@ constant name must match the named export from `@qvac/sdk`.
   see resampling artefacts; switch to a real device if transcription degrades.
 - Keeping the diarisation models resident speeds up repeat "Detect speakers"
   runs but holds extra memory for the app's lifetime.
+- Diarisation across very long recordings keeps speaker IDs stable via the
+  AOSC speaker cache, but speaker labels are positional (`Speaker 0`, `Speaker
+  1`, …), not identified names.
 
 ## License
 
