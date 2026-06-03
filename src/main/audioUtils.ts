@@ -38,31 +38,64 @@ function parseDiarTimestamp(token: string): number {
 }
 
 /**
- * Parse SortFormer's text output into structured segments. The model
- * returns one line per turn. Across SDK versions the timestamp shape has
- * varied, so we accept both:
- *   `Speaker N: HH:MM:SS - HH:MM:SS`   (single-file GGUF, SDK ≥ 0.12)
- *   `Speaker N: <start>s - <end>s`     (legacy composite ONNX models)
- * Lines that don't match are tolerated (some SDK versions interleave a
- * preamble or summary line). Segments are returned sorted by start time so
- * downstream slicing is monotonic.
+ * Parse SortFormer's text output into structured segments. We scan the WHOLE
+ * blob with a global regex rather than line-by-line: the streaming GGUF emits
+ * every turn back-to-back with NO separator
+ * (`...00:36:26.000Speaker 0: 00:36:26.000 - 00:36:27.440Speaker 0:...`), so a
+ * per-line match would capture only the first turn. Across SDK versions the
+ * timestamp shape has varied, so we accept both:
+ *   `Speaker N: HH:MM:SS(.mmm) - HH:MM:SS(.mmm)`  (single-file GGUF, SDK ≥ 0.12)
+ *   `Speaker N: <start>s - <end>s`                (legacy composite ONNX models)
+ * Segments are returned sorted by start time so downstream slicing is monotonic.
  */
 export function parseDiarization(text: string): DiarSegment[] {
   const segs: DiarSegment[] = []
-  // Timestamp token = digits with optional `:` separators and a decimal
-  // point; a trailing `s` (seconds form) is consumed but not captured.
-  const line_re = /Speaker\s+(\d+):\s*([\d.:]+)s?\s*-+>?\s*([\d.:]+)s?/i
-  for (const line of text.split('\n')) {
-    const m = line.match(line_re)
-    if (m) {
-      const start = parseDiarTimestamp(m[2])
-      const end = parseDiarTimestamp(m[3])
-      if (Number.isFinite(start) && Number.isFinite(end)) {
-        segs.push({ speaker: Number(m[1]), start, end })
-      }
+  // Global. Timestamp token = digits with optional `:` separators and a decimal
+  // point; a trailing `s` (seconds form) is consumed but not captured. We match
+  // the keyword as `[Ss]peaker` and deliberately do NOT use the `i` flag: with
+  // `i`, the optional trailing `s?` greedily eats the capital "S" of the *next*
+  // "Speaker" in the unseparated stream, which silently drops every other turn.
+  const re = /[Ss]peaker\s+(\d+):\s*([\d.:]+)s?\s*-+>?\s*([\d.:]+)s?/g
+  for (const m of text.matchAll(re)) {
+    const start = parseDiarTimestamp(m[2])
+    const end = parseDiarTimestamp(m[3])
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      segs.push({ speaker: Number(m[1]), start, end })
     }
   }
   return segs.sort((a, b) => a.start - b.start)
+}
+
+/**
+ * Coalesce a sorted segment list into speaker "turns" so we transcribe coherent
+ * spans instead of the engine's ~1.5-2 s micro-chunks (a 40-min call yields
+ * 1000+ of those, which would mean 1000+ Parakeet TDT passes).
+ *
+ * Consecutive segments from the same speaker are merged while:
+ *   - the silence gap to the next chunk is ≤ `maxGapSec` (a longer pause starts
+ *     a new turn — usually a genuine hand-off or break), and
+ *   - the running turn stays ≤ `maxTurnSec` (so a dominant speaker can't grow a
+ *     single multi-minute slice that would choke the batch TDT model).
+ */
+export function coalesceTurns(
+  segs: DiarSegment[],
+  { maxGapSec = 1.5, maxTurnSec = 30 }: { maxGapSec?: number; maxTurnSec?: number } = {}
+): DiarSegment[] {
+  const out: DiarSegment[] = []
+  for (const s of segs) {
+    const last = out[out.length - 1]
+    if (
+      last &&
+      last.speaker === s.speaker &&
+      s.start - last.end <= maxGapSec &&
+      s.end - last.start <= maxTurnSec
+    ) {
+      last.end = Math.max(last.end, s.end)
+    } else {
+      out.push({ speaker: s.speaker, start: s.start, end: s.end })
+    }
+  }
+  return out
 }
 
 /**

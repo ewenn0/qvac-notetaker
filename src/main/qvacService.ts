@@ -20,6 +20,7 @@ import type { ModelKind, Device, ModelLoadProgress, TranscriptDelta } from '@sha
 import type { LoadModelOptions, ModelProgressUpdate, ContextOverflowError } from '@qvac/sdk'
 import {
   parseDiarization,
+  coalesceTurns,
   flattenInt16,
   sliceInt16,
   writeWavInt16,
@@ -86,7 +87,17 @@ async function resolveSimpleModelSrc(modelOptionId: string): Promise<unknown> {
  * `LegacyParakeetModelDeprecatedError`.
  */
 const PARAKEET_TDT = 'PARAKEET_TDT_0_6B_V3_Q8_0'
-const PARAKEET_SORTFORMER = 'PARAKEET_SORTFORMER_4SPK_V1_Q8_0'
+// SortFormer **v2.1** (AOSC streaming) GGUF — NOT the v1 offline model.
+//
+// v1 runs its transformer encoder over the whole clip in one pass, so its
+// activation memory grows ~quadratically with audio length. A 40-80 min
+// recording asks for >100 GiB and the allocator fails (`run_encoder failed`),
+// which the engine surfaces as the literal string "[Inference error]" and zero
+// segments. v2.1 is the streaming variant: it processes a bounded rolling
+// window and keeps a long-term speaker cache, so memory stays flat regardless
+// of duration and speaker IDs stay stable across the whole recording. We drive
+// it via `transcribeStream` (see `runSortformerStreaming`).
+const PARAKEET_SORTFORMER = 'PARAKEET_SORTFORMER_4SPK_V2_1_Q8_0'
 
 /**
  * Batch-only TDT model — the SDK refuses to stream it. Streaming-capable
@@ -151,6 +162,18 @@ export class QvacService extends EventEmitter {
   private llm: LoadedModel | null = null
   private device: Device = 'gpu'
   private activeStreamSession: ActiveStream | null = null
+  /**
+   * Byte layout the active streaming session expects for `pushAudio()` chunks.
+   *
+   * Whisper is loaded with `audio_format: 'f32le'` and its streaming op honours
+   * that, so we forward the renderer's Float32 PCM verbatim. The Parakeet addon
+   * is different: its duplex pump (`_pumpStreamingAudio`) receives each RPC
+   * chunk as a plain Buffer (never a Float32Array after serialisation) and
+   * unconditionally reinterprets the bytes as signed 16-bit PCM. Feeding it
+   * f32le there yields garbage audio (the same bug we hit in diarisation), so
+   * for Parakeet we must hand over s16le.
+   */
+  private activeStreamPcmFormat: 'f32le' | 's16le' = 'f32le'
   private streamDonePromise: Promise<void> | null = null
   /** Wall-clock time (ms) of the most recent `pushAudio()` call. */
   private lastAudioPushAt?: number
@@ -436,6 +459,8 @@ export class QvacService extends EventEmitter {
     }).transcribeStream(params)) as ActiveStream
 
     this.activeStreamSession = session
+    // Parakeet (CTC) streaming expects s16le bytes; Whisper expects f32le.
+    this.activeStreamPcmFormat = this.stt.modelType === 'parakeet' ? 's16le' : 'f32le'
 
     const sttSource: 'whisper' | 'parakeet' =
       this.stt.modelType === 'parakeet' ? 'parakeet' : 'whisper'
@@ -481,31 +506,40 @@ export class QvacService extends EventEmitter {
   /**
    * Feed a chunk of audio into the active streaming session.
    *
-   * `pcm` is 16 kHz mono Float32 from the renderer's AudioWorklet. The SDK's
-   * `write()` is typed `Uint8Array` and the model was loaded with
-   * `audio_format: 'f32le'`, so we hand it a byte-view over the same memory.
+   * `pcm` is 16 kHz mono Float32 from the renderer's AudioWorklet. We forward it
+   * as a byte-view in whichever layout the active engine expects — f32le for
+   * Whisper, s16le for Parakeet (see `activeStreamPcmFormat`).
    */
   pushAudio(pcm: Float32Array): void {
     const session = this.activeStreamSession
-    if (!session) return
-    try {
-      const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)
-      session.write(bytes)
-      this.lastAudioPushAt = performance.now()
-    } catch (err) {
-      console.error('[qvac] session.write failed:', err)
-    }
-    // Mirror into the diarisation buffer (independent of whether the SDK
-    // session accepted the chunk — we want every sample the user recorded).
-    // Float32 -> Int16 with simple clipping. We deliberately do this even
-    // when no diarisation is in flight because we don't know yet whether
-    // the user will hit "Detect speakers" after Stop, and audio that isn't
-    // saved during recording can't be reconstructed later.
+    // Float32 -> Int16 with simple clipping. We compute this up front because
+    // it serves two purposes: the diarisation buffer (always), and the s16le
+    // wire format for Parakeet streaming (see `activeStreamPcmFormat`). We
+    // build it even when no diarisation is in flight because we don't know yet
+    // whether the user will hit "Detect speakers" after Stop, and audio that
+    // isn't saved during recording can't be reconstructed later.
     const int16 = new Int16Array(pcm.length)
     for (let i = 0; i < pcm.length; i++) {
       const s = Math.max(-1, Math.min(1, pcm[i]))
       int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
     }
+
+    if (session) {
+      try {
+        // Whisper wants f32le, Parakeet wants s16le (see `activeStreamPcmFormat`).
+        const bytes =
+          this.activeStreamPcmFormat === 's16le'
+            ? new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength)
+            : new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)
+        session.write(bytes)
+        this.lastAudioPushAt = performance.now()
+      } catch (err) {
+        console.error('[qvac] session.write failed:', err)
+      }
+    }
+
+    // Mirror into the diarisation buffer (independent of whether the SDK
+    // session accepted the chunk — we want every sample the user recorded).
     this.audioBuffer.push(int16)
     this.audioBufferSamples += int16.length
   }
@@ -616,10 +650,13 @@ export class QvacService extends EventEmitter {
       throw new Error('No recorded audio to diarise — record something first.')
     }
 
-    // 1. Materialise the buffer to a temp WAV. Both SDK models accept a file
-    // path via `audioChunk`, which is cheaper than re-encoding base64 in
-    // memory for multi-minute recordings.
+    // 1. Materialise the buffer to a temp WAV for SortFormer, and keep the
+    // flattened int16 around to cut the per-speaker slices that Parakeet TDT
+    // transcribes. We hand SortFormer a file path (not a hand-fed PCM stream):
+    // the SDK's own audio reader frames/aligns the samples correctly, which a
+    // manual duplex byte-pump does not.
     const tmpRoot = mkdtempSync(join(tmpdir(), 'qvac-diarize-'))
+    const flat = flattenInt16(this.audioBuffer, this.audioBufferSamples)
     const wavPath = join(tmpRoot, 'recording.wav')
     onProgress('Writing audio buffer to disk…')
     writeWavInt16(wavPath, this.audioBuffer, this.SAMPLE_RATE)
@@ -649,19 +686,31 @@ export class QvacService extends EventEmitter {
           this.diarSortformerId = null
         }
         onProgress('Loading SortFormer (speaker boundaries)…')
-        // Single-file GGUF: the engine recognises this as a Sortformer model
-        // from its metadata — no `modelType: 'sortformer'` / `parakeetSortformerSrc`.
+        // `streaming: true` is the crux of the long-audio fix. Without it the
+        // engine runs the offline `diarize_samples` path, whose encoder attends
+        // over the WHOLE clip at once — a 40-80 min recording needs >100 GiB and
+        // the Vulkan allocator fails (`run_encoder failed` → "[Inference error]"
+        // → zero segments). With it, the same one-shot `transcribe()` call is
+        // routed through `feed_pcm_f32()` — a bounded rolling-window streaming
+        // session — so memory stays flat regardless of duration, and the v2.1
+        // AOSC speaker cache (auto-enabled from GGUF metadata) keeps speaker IDs
+        // stable across the whole recording. `streamingEmitPartials: false`
+        // keeps the output to finalised turns.
         const sortformerSrc = sdkExport(sdk, PARAKEET_SORTFORMER)
         sfModelId = await (sdk as unknown as {
           loadModel: (a: unknown) => Promise<string>
         }).loadModel({
           modelSrc: sortformerSrc,
           modelType: 'parakeet',
-          modelConfig: { useGPU: useGpu }
+          modelConfig: { useGPU: useGpu, streaming: true, streamingEmitPartials: false }
         })
         this.diarSortformerId = sfModelId
       }
       onProgress('Detecting speakers…')
+      // One-shot transcribe over the WAV. Because the model was loaded with
+      // `streaming: true`, this runs through the bounded streaming session
+      // rather than the OOM-prone offline encoder, while still returning the
+      // familiar "Speaker N: start - end" lines as joined text.
       const diarText = await (sdk as unknown as {
         transcribe: (a: { modelId: string; audioChunk: string }) => Promise<string>
       }).transcribe({ modelId: sfModelId, audioChunk: wavPath })
@@ -673,8 +722,14 @@ export class QvacService extends EventEmitter {
           JSON.stringify(diarText)
       )
 
-      const segments = parseDiarization(diarText)
-      console.error(`[qvac] parsed ${segments.length} diarisation segment(s)`)
+      // SortFormer emits ~1.5-2 s micro-chunks; coalesce consecutive
+      // same-speaker chunks into coherent turns so TDT transcribes a few dozen
+      // spans instead of hundreds/thousands of fragments.
+      const rawSegments = parseDiarization(diarText)
+      const segments = coalesceTurns(rawSegments)
+      console.error(
+        `[qvac] parsed ${rawSegments.length} segment(s) → ${segments.length} turn(s)`
+      )
       if (segments.length === 0) {
         throw new Error(
           'SortFormer did not detect any speaker segments. The recording may be too short or too quiet.'
@@ -712,7 +767,6 @@ export class QvacService extends EventEmitter {
 
       const sliceDir = join(tmpRoot, 'slices')
       mkdirSync(sliceDir, { recursive: true })
-      const flat = flattenInt16(this.audioBuffer, this.audioBufferSamples)
       const results: { speaker: number; start: number; end: number; text: string }[] = []
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i]

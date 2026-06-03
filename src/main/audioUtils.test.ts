@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseDiarization,
+  coalesceTurns,
   flattenInt16,
   sliceInt16,
   buildWavInt16,
@@ -44,6 +45,63 @@ describe('parseDiarization', () => {
   it('parses fractional HH:MM:SS and MM:SS timestamps', () => {
     const out = parseDiarization('Speaker 2: 01:05.50 - 01:06.00')
     expect(out).toEqual([{ speaker: 2, start: 65.5, end: 66 }])
+  })
+
+  it('parses back-to-back turns emitted with NO separator (streaming GGUF)', () => {
+    // The streaming SortFormer concatenates every turn with no delimiter.
+    const out = parseDiarization(
+      'Speaker 0: 00:36:24.000 - 00:36:26.000Speaker 0: 00:36:26.000 - 00:36:27.440' +
+        'Speaker 1: 00:37:44.080 - 00:37:46.000'
+    )
+    expect(out).toEqual([
+      { speaker: 0, start: 2184, end: 2186 },
+      { speaker: 0, start: 2186, end: 2187.44 },
+      { speaker: 1, start: 2264.08, end: 2266 }
+    ])
+  })
+})
+
+describe('coalesceTurns', () => {
+  it('merges contiguous same-speaker micro-chunks into one turn', () => {
+    const out = coalesceTurns([
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 0, start: 2, end: 4 },
+      { speaker: 0, start: 4, end: 6 }
+    ])
+    expect(out).toEqual([{ speaker: 0, start: 0, end: 6 }])
+  })
+
+  it('starts a new turn on a speaker change', () => {
+    const out = coalesceTurns([
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 2, end: 4 }
+    ])
+    expect(out).toEqual([
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 2, end: 4 }
+    ])
+  })
+
+  it('splits a same-speaker run when the silence gap exceeds maxGapSec', () => {
+    const out = coalesceTurns([
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 0, start: 10, end: 12 }
+    ])
+    expect(out).toEqual([
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 0, start: 10, end: 12 }
+    ])
+  })
+
+  it('caps a merged turn at maxTurnSec to keep TDT slices bounded', () => {
+    const segs = Array.from({ length: 40 }, (_v, i) => ({
+      speaker: 0,
+      start: i * 2,
+      end: i * 2 + 2
+    }))
+    const out = coalesceTurns(segs, { maxTurnSec: 30 })
+    expect(out.length).toBeGreaterThan(1)
+    for (const t of out) expect(t.end - t.start).toBeLessThanOrEqual(30)
   })
 })
 
