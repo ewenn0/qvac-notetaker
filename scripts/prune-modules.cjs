@@ -39,6 +39,26 @@ const path = require('path')
 const ROOT = path.resolve(__dirname, '..')
 const NODE_MODULES = path.join(ROOT, 'node_modules')
 
+// QVAC SDK plugin addons this app never loads. We register only the LLM,
+// Whisper and Parakeet plugins via `qvac/worker.entry.mjs` (kept in sync with
+// `qvac.config.json`), so the bare worker never imports these packages. The
+// default SDK worker (`@qvac/sdk/dist/server/worker.js`) WOULD import them, but
+// our custom entry takes resolution priority, so removing them is safe.
+//
+// Dropping them avoids shipping their (large) native binaries — diffusion in
+// particular pulls in stable-diffusion.cpp. If you ever add translation,
+// embeddings, OCR, TTS, VLA or classification, remove the matching entry here
+// (and add its plugin to the worker entry + config) and run `npm run reinstall`.
+const UNUSED_SDK_ADDONS = [
+  '@qvac/diffusion-cpp', // image generation (sdcpp-generation plugin)
+  '@qvac/tts-ggml', // text-to-speech (tts-ggml plugin)
+  '@qvac/ocr-onnx', // OCR (onnx-ocr plugin)
+  '@qvac/vla-ggml', // vision-language-action (ggml-vla plugin)
+  '@qvac/translation-nmtcpp', // translation (nmtcpp-translation plugin)
+  '@qvac/embed-llamacpp', // embeddings (llamacpp-embedding plugin)
+  '@qvac/classification-ggml' // classification (ggml-classification plugin)
+]
+
 const KEEP_PLATFORMS = new Set(['win32-x64', 'win32-arm64'])
 // Any prebuild directory whose name starts with one of these prefixes is
 // considered foreign. We special-case `win32-*` so a future ARM build still
@@ -181,6 +201,13 @@ function pruneSourceMaps() {
   }
 }
 
+function pruneUnusedSdkAddons() {
+  for (const pkg of UNUSED_SDK_ADDONS) {
+    const dir = path.join(NODE_MODULES, ...pkg.split('/'))
+    if (fs.existsSync(dir)) safeRmDir(dir)
+  }
+}
+
 function mb(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1)
 }
@@ -192,6 +219,7 @@ if (!fs.existsSync(NODE_MODULES)) {
 }
 
 walkPackages(NODE_MODULES)
+pruneUnusedSdkAddons()
 pruneSdkExamples()
 pruneSdkExpoBits()
 pruneSourceMaps()
