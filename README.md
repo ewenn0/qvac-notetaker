@@ -4,6 +4,7 @@ A local, private AI notetaker for Windows (also macOS / Linux) powered by the
 [QVAC SDK](https://docs.qvac.tether.io/). Records microphone and/or system
 audio, transcribes it in real time, and lets a locally-run LLM rewrite or
 summarise the transcript. No data leaves your machine.
+<img width="1689" height="1203" alt="qvac-notetaker-ui" src="https://github.com/user-attachments/assets/029932c2-3099-4b63-8525-e8e56225f7f1" />
 
 ## Features
 
