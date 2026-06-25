@@ -483,7 +483,29 @@ function setupIpc(): void {
   })
 }
 
+// Single-instance lock. A second launch — including an impatient double-click
+// while the first window is still spinning up — must NOT start another Electron
+// + bare-worker process. Without this the app accumulates duplicate background
+// processes that fight over the GPU/Vulkan device, leaving stray processes in
+// Task Manager and making launches flaky. The loser quits; the winner gets the
+// existing window focused via 'second-instance'.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+
 app.whenReady().then(async () => {
+  // A losing second instance may still reach here before its quit settles;
+  // bail out so it never builds a window or spawns a worker.
+  if (!gotSingleInstanceLock) return
+
   electronApp.setAppUserModelId('io.notetaker.qvac')
 
   // Microphone access prompt on macOS; harmless no-op on Windows/Linux.
@@ -517,11 +539,23 @@ app.whenReady().then(async () => {
   })
 })
 
-app.on('window-all-closed', async () => {
-  await qvacService.unloadAll()
+app.on('window-all-closed', () => {
+  // Drive the real teardown through before-quit. macOS apps conventionally
+  // stay resident with no windows open.
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', async () => {
-  await qvacService.unloadAll()
+// Deterministic shutdown: defer the quit, unload models and kill the SDK's
+// bare worker subprocess (so it can't linger and hold the GPU), then quit for
+// real. Guarded so the re-issued quit doesn't loop.
+let teardownComplete = false
+app.on('before-quit', async (event) => {
+  if (teardownComplete) return
+  event.preventDefault()
+  try {
+    await qvacService.shutdown()
+  } finally {
+    teardownComplete = true
+    app.quit()
+  }
 })

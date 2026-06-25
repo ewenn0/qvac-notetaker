@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { LLM_MODELS, STT_MODELS, type ModelLoadProgress } from '@shared/types'
+import { loadSetting, saveSetting } from '../lib/persist'
 
 export interface UseModelsArgs {
   /** Surface load/runtime errors to the shared error banner. */
@@ -33,12 +34,25 @@ export interface UseModels {
  * flags when each model reaches the `ready` state.
  */
 export function useModels({ setError, getSttLanguage, getLlmCtxSize }: UseModelsArgs): UseModels {
-  const [sttModelId, setSttModelId] = useState(STT_MODELS[0].id)
-  const [llmModelId, setLlmModelId] = useState(LLM_MODELS[0].id)
+  // Restore the last-used selections. Validate against the current catalogues
+  // so a stale id (e.g. a model removed in an SDK migration) falls back to the
+  // first option instead of leaving an unselectable dropdown.
+  const [sttModelId, setSttModelId] = useState(() => {
+    const saved = loadSetting<string>('sttModelId', STT_MODELS[0].id)
+    return STT_MODELS.some((m) => m.id === saved) ? saved : STT_MODELS[0].id
+  })
+  const [llmModelId, setLlmModelId] = useState(() => {
+    const saved = loadSetting<string>('llmModelId', LLM_MODELS[0].id)
+    return LLM_MODELS.some((m) => m.id === saved) ? saved : LLM_MODELS[0].id
+  })
   const [sttProgress, setSttProgress] = useState<ModelLoadProgress | undefined>()
   const [llmProgress, setLlmProgress] = useState<ModelLoadProgress | undefined>()
   const [sttLoaded, setSttLoaded] = useState(false)
   const [llmLoaded, setLlmLoaded] = useState(false)
+
+  // Persist selections so they're pre-selected on the next launch.
+  useEffect(() => saveSetting('sttModelId', sttModelId), [sttModelId])
+  useEffect(() => saveSetting('llmModelId', llmModelId), [llmModelId])
 
   // Read the latest language without re-creating loadStt on every keystroke.
   const getSttLanguageRef = useRef(getSttLanguage)

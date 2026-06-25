@@ -417,6 +417,33 @@ export class QvacService extends EventEmitter {
     await this.unload('llm')
   }
 
+  /**
+   * Full teardown for app exit. Unloads any loaded models, then kills the
+   * SDK's `bare` worker subprocess via the public `close()` export.
+   *
+   * Why this is needed: the SDK spawns the worker as a separate OS process and
+   * only reaps it through Node `exit`/signal hooks. Electron's quit on Windows
+   * doesn't reliably fire those, so the worker (and the GPU/Vulkan device it
+   * holds) lingers after the window closes — which both leaves stray processes
+   * in Task Manager and makes the *next* launch flaky while the device is still
+   * held. Calling `close()` terminates it deterministically.
+   *
+   * No-ops if the SDK was never imported (nothing was loaded, no worker).
+   */
+  async shutdown(): Promise<void> {
+    if (!qvac) return
+    try {
+      await this.unloadAll()
+    } catch (err) {
+      console.error('[qvac] unloadAll during shutdown failed:', err)
+    }
+    try {
+      await qvac.close()
+    } catch (err) {
+      console.error('[qvac] sdk.close() during shutdown failed:', err)
+    }
+  }
+
   // ---------------- Transcription ----------------
 
   /**

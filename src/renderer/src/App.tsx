@@ -17,6 +17,7 @@ import { useModels } from './hooks/useModels'
 import { useRuntime } from './hooks/useRuntime'
 import { useDocument } from './hooks/useDocument'
 import { useRecording } from './hooks/useRecording'
+import { loadSetting, saveSetting } from './lib/persist'
 
 function localDate(d: Date = new Date()): string {
   const y = d.getFullYear()
@@ -33,11 +34,25 @@ function App(): JSX.Element {
   const summaryDoneRef = useRef<(text: string) => void>(() => {})
 
   // -- Per-model settings (cogwheel popups) --
-  const [sttLanguages, setSttLanguages] = useState<string[]>(['en'])
-  const [summaryInstructions, setSummaryInstructions] = useState(DEFAULT_SUMMARY_INSTRUCTIONS)
-  const [summaryCtxSize, setSummaryCtxSize] = useState(DEFAULT_CTX_SIZE)
+  // Restored from the last session so the user's tweaks survive a relaunch.
+  // "Reset to default" in the summary dialog still rewrites these to defaults.
+  const [sttLanguages, setSttLanguages] = useState<string[]>(() => {
+    const saved = loadSetting<string[]>('sttLanguages', ['en'])
+    return Array.isArray(saved) && saved.length > 0 ? saved : ['en']
+  })
+  const [summaryInstructions, setSummaryInstructions] = useState(() =>
+    loadSetting('summaryInstructions', DEFAULT_SUMMARY_INSTRUCTIONS)
+  )
+  const [summaryCtxSize, setSummaryCtxSize] = useState(() =>
+    loadSetting('summaryCtxSize', DEFAULT_CTX_SIZE)
+  )
   const [sttSettingsOpen, setSttSettingsOpen] = useState(false)
   const [summarySettingsOpen, setSummarySettingsOpen] = useState(false)
+
+  // Persist settings whenever they change so the next launch starts from here.
+  useEffect(() => saveSetting('sttLanguages', sttLanguages), [sttLanguages])
+  useEffect(() => saveSetting('summaryInstructions', summaryInstructions), [summaryInstructions])
+  useEffect(() => saveSetting('summaryCtxSize', summaryCtxSize), [summaryCtxSize])
 
   const labelLanguage = effectiveLanguage(sttLanguages)
 
