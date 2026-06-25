@@ -502,6 +502,13 @@ app.whenReady().then(async () => {
   setupIpc()
   createWindow()
 
+  // Reclaim the SDK's on-disk KV cache (~/.qvac/kv-cache). The SDK never evicts
+  // it and older builds wrote a multi-GB dump per summarise, so installs can
+  // accumulate 100+ GB of dead cache. We no longer use persistent KV caching,
+  // so purge it on every launch. Fire-and-forget: runs before any inference
+  // worker is up (files aren't locked) and must not block the window.
+  void qvacService.purgeKvCache()
+
   // Check for updates in the background (production, packaged builds only).
   initAutoUpdater()
 

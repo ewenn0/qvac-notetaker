@@ -12,7 +12,8 @@
 
 import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readdir, rm, stat } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelKind, Device, ModelLoadProgress, TranscriptDelta } from '@shared/types'
 // Type-only imports — erased at compile time, so they never break the
@@ -877,7 +878,14 @@ export class QvacService extends EventEmitter {
       modelId: this.llm.modelId,
       history,
       stream: true,
-      kvCache: true
+      // No persistent KV cache. The SDK keys disk cache by conversation
+      // history, so for a note-taker (every transcript is unique) it never
+      // hits across notes — it just dumps a multi-GB `{key}/{model}/{hash}.bin`
+      // per summarise/rewrite into ~/.qvac/kv-cache with no eviction, which
+      // balloons to 100+ GB over time. Disable it; the in-memory KV cache used
+      // during a single inference (and the cacheTokens/promptTokens stats) is
+      // unaffected.
+      kvCache: false
     })
 
     try {
@@ -1006,6 +1014,54 @@ export class QvacService extends EventEmitter {
     return cleanTitle(final.contentText ?? buffer)
   }
 
+  /**
+   * Best-effort removal of the SDK's on-disk KV cache at `~/.qvac/kv-cache`.
+   *
+   * The SDK persists a full key/value tensor dump per cached conversation and
+   * never evicts; older builds passed `kvCache: true` for every summarise, so
+   * existing installs can accumulate 100+ GB of dead cache. We no longer write
+   * to it (all `completion()` calls use `kvCache: false`), so the directory is
+   * pure reclaimable junk. Safe to delete: it's a cache, regenerated on demand.
+   *
+   * Mirrors the SDK's HOME_DIR resolution (`server/env.js`) so we hit the same
+   * directory it would, even under Snap. Returns the number of bytes reclaimed
+   * (0 if nothing was there). Never throws — failures are logged and swallowed
+   * so they can't block startup.
+   */
+  async purgeKvCache(): Promise<number> {
+    const home =
+      process.env.SNAP_USER_COMMON ??
+      process.env.HOME ??
+      process.env.USERPROFILE ??
+      homedir()
+    const dir = join(home, '.qvac', 'kv-cache')
+    try {
+      // stat first so we only log/report when there was actually something.
+      await stat(dir)
+    } catch {
+      return 0
+    }
+    let reclaimed = 0
+    try {
+      reclaimed = await dirSizeBytes(dir)
+    } catch {
+      // Sizing is best-effort telemetry only; proceed with deletion regardless.
+    }
+    try {
+      await rm(dir, { recursive: true, force: true, maxRetries: 3 })
+      console.error(
+        `[qvac] purged KV cache at ${dir} (~${(reclaimed / 1e9).toFixed(2)} GB reclaimed)`
+      )
+    } catch (err) {
+      console.error(
+        `[qvac] failed to purge KV cache at ${dir}:`,
+        err instanceof Error ? err.message : String(err)
+      )
+      return 0
+    }
+    return reclaimed
+  }
+
   private emitProgress(p: ModelLoadProgress): void {
     this.emit('progress', {
       kind: p.kind,
@@ -1025,6 +1081,28 @@ export const qvacService = new QvacService()
  * blocks, markdown/quote wrappers and trailing punctuation, take the first
  * non-empty line, and cap to ~10 words.
  */
+/**
+ * Recursively sum the byte size of every file under `dir`. Best-effort: any
+ * entry that can't be stat'd (race with deletion, permissions) is skipped.
+ */
+async function dirSizeBytes(dir: string): Promise<number> {
+  let total = 0
+  const entries = await readdir(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const full = join(dir, entry.name)
+    try {
+      if (entry.isDirectory()) {
+        total += await dirSizeBytes(full)
+      } else if (entry.isFile()) {
+        total += (await stat(full)).size
+      }
+    } catch {
+      // Entry vanished or is unreadable — ignore for sizing purposes.
+    }
+  }
+  return total
+}
+
 function cleanTitle(raw: string): string {
   let t = (raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   t = (t.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '').trim()
