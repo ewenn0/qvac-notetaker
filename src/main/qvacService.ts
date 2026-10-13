@@ -634,13 +634,17 @@ export class QvacService extends EventEmitter {
   async transcribeFile(filePath: string): Promise<string> {
     if (!this.stt) throw new Error('No STT model loaded.')
     const sdk = await getSdk()
-    const text = await (sdk as unknown as {
-      transcribe: (a: unknown) => Promise<string>
-    }).transcribe({
-      modelId: this.stt.modelId,
-      audioChunk: filePath
-    })
-    return text
+    try {
+      const text = await (sdk as unknown as {
+        transcribe: (a: unknown) => Promise<string>
+      }).transcribe({
+        modelId: this.stt.modelId,
+        audioChunk: filePath
+      })
+      return text
+    } catch (err) {
+      throw this.translateSdkError(sdk, err)
+    }
   }
 
   // ---------------- Diarisation ----------------
@@ -956,14 +960,11 @@ export class QvacService extends EventEmitter {
         ttftMs: this.lastTtftMs
       }
     } catch (err) {
-      // The prompt was too big for the model's context window. Turn the
-      // SDK's typed error into an actionable message (it survives the worker
-      // RPC boundary, so `instanceof` is reliable) and let it propagate
-      // through the existing rewrite IPC -> error-banner path.
-      if (err instanceof sdk.ContextOverflowError) {
-        throw new Error(this.describeContextOverflow(err))
-      }
-      throw err
+      // Turn the SDK's typed errors (context overflow, worker crash/shutdown,
+      // engine-startup failures) into actionable messages, then let them
+      // propagate through the existing rewrite IPC -> error-banner path.
+      // Unrecognised errors pass through unchanged.
+      throw this.translateSdkError(sdk, err)
     }
   }
 
@@ -982,6 +983,44 @@ export class QvacService extends EventEmitter {
       `${promptPart} exceeds the ${ctx}-token context window — ` +
       'raise the context size in Summary settings, or shorten the transcript.'
     )
+  }
+
+  /**
+   * Map the SDK's typed errors to actionable, user-facing messages.
+   *
+   * These classes (context overflow since 0.12; the worker-lifecycle and
+   * engine-startup errors since 0.13+) survive the worker RPC boundary, so
+   * `instanceof sdk.<Error>` is reliable. We resolve the constructors by name
+   * off the SDK module so a class that doesn't exist in a given build simply
+   * doesn't match (instead of a hard import error). Anything we don't
+   * specifically recognise is returned unchanged, so callers can
+   * `throw this.translateSdkError(sdk, err)` without swallowing real errors.
+   */
+  private translateSdkError(sdk: QvacModule, err: unknown): unknown {
+    const mod = sdk as unknown as Record<string, unknown>
+    const isInstanceOf = (name: string): boolean => {
+      const ctor = mod[name]
+      return typeof ctor === 'function' && err instanceof (ctor as new (...a: never[]) => Error)
+    }
+    if (isInstanceOf('ContextOverflowError')) {
+      return new Error(this.describeContextOverflow(err as ContextOverflowError))
+    }
+    if (isInstanceOf('WorkerCrashedError')) {
+      return new Error(
+        'The local inference engine crashed mid-run. Try again — if it keeps ' +
+          'happening, toggle CPU/GPU in the AI Runtime panel or pick a smaller model.'
+      )
+    }
+    if (isInstanceOf('WorkerShutdownError')) {
+      return new Error('The inference engine was shut down. Reload the model and try again.')
+    }
+    if (isInstanceOf('WorkerStartupError') || isInstanceOf('BareRuntimeBinaryNotFoundError')) {
+      return new Error(
+        'The inference engine failed to start. Reinstall dependencies ' +
+          '(`npm install`) and restart the app.'
+      )
+    }
+    return err
   }
 
   /**
@@ -1034,12 +1073,16 @@ export class QvacService extends EventEmitter {
       }
     }).completion({ modelId: this.llm.modelId, history, stream: true, kvCache: false })
 
-    let buffer = ''
-    for await (const event of result.events) {
-      if (event.type === 'contentDelta' && event.text) buffer += event.text
+    try {
+      let buffer = ''
+      for await (const event of result.events) {
+        if (event.type === 'contentDelta' && event.text) buffer += event.text
+      }
+      const final = await result.final
+      return cleanTitle(final.contentText ?? buffer)
+    } catch (err) {
+      throw this.translateSdkError(sdk, err)
     }
-    const final = await result.final
-    return cleanTitle(final.contentText ?? buffer)
   }
 
   /**
