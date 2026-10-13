@@ -363,17 +363,46 @@ export class QvacService extends EventEmitter {
       })
     }
 
-    const modelId = await sdk.loadModel({
+    // VPN / P2P resilience. QVAC fetches models over a peer-to-peer
+    // (hyperswarm/UDP) transport; VPNs and restrictive firewalls routinely block
+    // it, which makes a *fresh* download hang at 0 bytes forever (HTTPS-hosted
+    // models like Whisper are unaffected). Two guards:
+    //   1. Optional HTTPS mirror — if QVAC_MODEL_MIRROR_BASE is set we pass a
+    //      `fallbackSrc` the SDK uses when the P2P primary fails. HTTPS tunnels
+    //      through VPNs, so downloads can still succeed.
+    //   2. Stall watchdog — only for a fresh download with no mirror: if no byte
+    //      progress arrives in time, nudge the user, then fail fast with an
+    //      actionable message instead of spinning forever at 0%.
+    const fallbackSrc = this.mirrorFallbackSrc(modelSrc)
+    const alreadyDownloaded = await this.modelFilesPresent([optionId])
+
+    let sawProgress = false
+    const loadPromise = sdk.loadModel({
       modelSrc,
       modelType,
       modelConfig,
+      ...(fallbackSrc ? { fallbackSrc } : {}),
       onProgress: (p: ModelProgressUpdate) => {
         const pct = typeof p.percentage === 'number' ? p.percentage : 0
+        if (pct > 0) sawProgress = true
         const state: ModelLoadProgress['state'] = pct < 100 ? 'downloading' : 'loading'
         // Keep the fit warning (if any) visible for the whole download/load.
         this.emitProgress({ kind, modelOptionId: optionId, percentage: pct, state, message: fitWarning })
       }
     } as LoadModelOptions)
+    // Swallow late settles on the orphaned promise if the watchdog wins the race.
+    loadPromise.catch(() => {})
+
+    const guard =
+      alreadyDownloaded || fallbackSrc
+        ? null
+        : this.armDownloadStallGuard(() => sawProgress, kind, optionId)
+    let modelId: string
+    try {
+      modelId = guard ? await Promise.race([loadPromise, guard.promise]) : await loadPromise
+    } finally {
+      guard?.cancel()
+    }
 
     const loaded: LoadedModel = { modelId, optionId, kind, modelType }
     if (kind === 'stt') this.stt = loaded
@@ -388,6 +417,80 @@ export class QvacService extends EventEmitter {
       sizeBytes
     })
     return loaded
+  }
+
+  /**
+   * Build an HTTPS fallback URL for a model from `QVAC_MODEL_MIRROR_BASE`, so a
+   * download can succeed over plain HTTPS when the P2P registry is unreachable
+   * (e.g. behind a VPN). Returns undefined when no mirror is configured or the
+   * model descriptor carries no registry path. The SDK only reaches for
+   * `fallbackSrc` if the primary (P2P) source fails, so it's safe to always set.
+   *
+   * Off by default — there is no public HTTPS mirror for the QVAC-hosted models
+   * (only the HuggingFace-hosted ones expose URLs). Point this at a CDN/bucket
+   * that mirrors `qvac_models_compiled/...` to make downloads VPN-proof.
+   */
+  private mirrorFallbackSrc(modelSrc: unknown): string | undefined {
+    const base = process.env.QVAC_MODEL_MIRROR_BASE
+    if (!base) return undefined
+    const rp =
+      modelSrc && typeof modelSrc === 'object' && 'registryPath' in modelSrc
+        ? (modelSrc as { registryPath?: unknown }).registryPath
+        : undefined
+    if (typeof rp !== 'string' || rp.length === 0) return undefined
+    return `${base.replace(/\/+$/, '')}/${rp.replace(/^\/+/, '')}`
+  }
+
+  /**
+   * Watchdog for a fresh model download. If no byte progress arrives within
+   * NUDGE_MS we surface a VPN hint but keep waiting (it may just be slow); if
+   * there's still nothing by FAIL_MS we reject with an actionable error so the
+   * UI recovers instead of hanging at 0%. The classic symptom of a VPN/firewall
+   * blocking QVAC's peer-to-peer (UDP) model transport. FAIL_MS is overridable
+   * via `QVAC_MODEL_STALL_FAIL_MS`.
+   */
+  private armDownloadStallGuard(
+    sawProgress: () => boolean,
+    kind: ModelKind,
+    optionId: string
+  ): { promise: Promise<never>; cancel: () => void } {
+    const NUDGE_MS = 20_000
+    const envFail = Number(process.env.QVAC_MODEL_STALL_FAIL_MS)
+    const FAIL_MS = Number.isFinite(envFail) && envFail > 0 ? envFail : 75_000
+    let nudgeTimer: ReturnType<typeof setTimeout> | undefined
+    let failTimer: ReturnType<typeof setTimeout> | undefined
+    const promise = new Promise<never>((_resolve, reject) => {
+      nudgeTimer = setTimeout(() => {
+        if (sawProgress()) return
+        this.emitProgress({
+          kind,
+          modelOptionId: optionId,
+          percentage: 0,
+          state: 'downloading',
+          message:
+            'Still trying to reach the model registry… If you are on a VPN, it may be ' +
+            'blocking QVAC’s peer-to-peer downloads — disabling it usually fixes this.'
+        })
+      }, NUDGE_MS)
+      failTimer = setTimeout(() => {
+        if (sawProgress()) return
+        reject(
+          new Error(
+            'Model download could not start. QVAC fetches models over a peer-to-peer ' +
+              '(UDP) connection, which VPNs and some firewalls block. Disable the VPN (or ' +
+              'switch to a network that allows it) and try again. Whisper models download ' +
+              'over HTTPS and are unaffected.'
+          )
+        )
+      }, FAIL_MS)
+    })
+    return {
+      promise,
+      cancel: () => {
+        if (nudgeTimer) clearTimeout(nudgeTimer)
+        if (failTimer) clearTimeout(failTimer)
+      }
+    }
   }
 
   /**
