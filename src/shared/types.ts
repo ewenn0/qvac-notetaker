@@ -29,17 +29,25 @@ export interface ModelOption {
  * STT option ids. Each id must match a named export of `@qvac/sdk` exactly
  * (resolved at runtime in `qvacService.ts`).
  *
- * As of @qvac/sdk 0.12 the Parakeet models ship as single-file GGUFs — the
+ * Since @qvac/sdk 0.12 the Parakeet models ship as single-file GGUFs — the
  * engine auto-detects TDT/CTC/Sortformer/EOU from the file's metadata — so
- * the two `PARAKEET_*` ids below are now plain SDK constants (Q8 quant),
- * just like Whisper, rather than composite encoder/decoder/vocab presets.
- * The Q8 GGUFs are a touch smaller on disk than the old FP32 component set.
+ * the `PARAKEET_*` ids below are plain SDK constants (Q8 quant), just like
+ * Whisper, rather than composite encoder/decoder/vocab presets.
+ *
+ * Every id here is a model `name` in the 0.21 registry (`@qvac/inference/models`,
+ * re-exported by `@qvac/sdk`). Keep STT ids to the whisper/parakeet engines and
+ * LLM ids to the llamacpp-completion engine — those are the only plugins the
+ * worker registers (`qvac/worker.entry.mjs`). New Parakeet variants must start
+ * with `PARAKEET_TDT` to be treated as batch; any other `PARAKEET_*` id is
+ * driven through the streaming CTC path (see `isParakeetBatch` in qvacService).
  */
 export const STT_MODELS: ModelOption[] = [
   { id: 'WHISPER_TINY', label: 'Whisper Tiny (multilingual)', kind: 'stt', sizeHint: '~75 MB', streaming: true },
   { id: 'WHISPER_BASE_Q8_0', label: 'Whisper Base Q8 (multilingual)', kind: 'stt', sizeHint: '~80 MB', streaming: true },
   { id: 'WHISPER_SMALL_Q8_0', label: 'Whisper Small Q8 (multilingual)', kind: 'stt', sizeHint: '~260 MB', streaming: true },
+  { id: 'WHISPER_EN_TINY_Q8_0', label: 'Whisper Tiny Q8 (English)', kind: 'stt', sizeHint: '~42 MB', streaming: true },
   { id: 'WHISPER_EN_BASE_Q8_0', label: 'Whisper Base Q8 (English)', kind: 'stt', sizeHint: '~80 MB', streaming: true },
+  { id: 'WHISPER_EN_SMALL_Q8_0', label: 'Whisper Small Q8 (English)', kind: 'stt', sizeHint: '~250 MB', streaming: true },
   { id: 'WHISPER_LARGE_V3_TURBO', label: 'Whisper Large v3 Turbo', kind: 'stt', sizeHint: '~1.5 GB', streaming: true },
   { id: 'PARAKEET_CTC_0_6B_Q8_0', label: 'Parakeet CTC Q8 (EN, streaming)', kind: 'stt', sizeHint: '~700 MB', streaming: true },
   { id: 'PARAKEET_TDT_0_6B_V3_Q8_0', label: 'Parakeet TDT v3 Q8 (EN, batch)', kind: 'stt', sizeHint: '~715 MB', streaming: false },
@@ -55,7 +63,10 @@ export const LLM_MODELS: ModelOption[] = [
   { id: 'LLAMA_3_2_1B_INST_Q4_0', label: 'Llama 3.2 1B Instruct Q4', kind: 'llm', sizeHint: '~770 MB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
   { id: 'QWEN3_1_7B_INST_Q4', label: 'Qwen3 1.7B Instruct Q4', kind: 'llm', sizeHint: '~1.1 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
   { id: 'GEMMA4_2B_MULTIMODAL_Q4_K_M', label: 'Gemma 4 2B Instruct Q4', kind: 'llm', sizeHint: '~3.2 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
-  { id: 'QWEN3_4B_INST_Q4_K_M', label: 'Qwen3 4B Instruct Q4', kind: 'llm', sizeHint: '~2.5 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 }
+  { id: 'QWEN3_4B_INST_Q4_K_M', label: 'Qwen3 4B Instruct Q4', kind: 'llm', sizeHint: '~2.5 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
+  // Highest-quality option; needs the most RAM/VRAM. Text-only via the
+  // llamacpp-completion plugin, same loader path as the other Qwen3 entries.
+  { id: 'QWEN3_8B_INST_Q4_K_M', label: 'Qwen3 8B Instruct Q4', kind: 'llm', sizeHint: '~4.7 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 }
 ]
 
 export interface ModelLoadProgress {
