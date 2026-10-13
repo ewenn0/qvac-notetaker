@@ -50,12 +50,14 @@ export const STT_MODELS: ModelOption[] = [
   { id: 'WHISPER_EN_SMALL_Q8_0', label: 'Whisper Small Q8 (English)', kind: 'stt', sizeHint: '~250 MB', streaming: true },
   { id: 'WHISPER_LARGE_V3_TURBO', label: 'Whisper Large v3 Turbo', kind: 'stt', sizeHint: '~1.5 GB', streaming: true },
   { id: 'PARAKEET_CTC_0_6B_Q8_0', label: 'Parakeet CTC Q8 (EN, streaming)', kind: 'stt', sizeHint: '~700 MB', streaming: true },
-  { id: 'PARAKEET_TDT_0_6B_V3_Q8_0', label: 'Parakeet TDT v3 Q8 (EN, batch)', kind: 'stt', sizeHint: '~715 MB', streaming: false },
-  // Larger, more accurate batch TDT added in SDK 0.21 (single-file GGUF, same
-  // loader path as the 0.6B). Batch-only like the other TDT — use it via
-  // "Load audio…", not live recording. `isParakeetBatch()` already keys off the
-  // PARAKEET_TDT prefix, so no main-process change is needed.
-  { id: 'PARAKEET_TDT_1_1B_Q8_0', label: 'Parakeet TDT 1.1B Q8 (EN, batch)', kind: 'stt', sizeHint: '~1.2 GB', streaming: false }
+  { id: 'PARAKEET_TDT_0_6B_V3_Q8_0', label: 'Parakeet TDT v3 Q8 (EN, batch)', kind: 'stt', sizeHint: '~715 MB', streaming: false }
+  // NOTE: PARAKEET_TDT_1_1B_Q8_0 is a valid 0.21 registry constant but its blob
+  // is NOT currently downloadable: the fetch hangs at 0 bytes forever ("…addresses'
+  // wasn't found" → "Downloading blob directly" never delivers data, no progress
+  // callback fires). Its same-batch sibling PARAKEET_TDT_0_6B_V3_Q8_0
+  // (parakeet/2026-09-30/) downloads fine, so this is registry-side availability,
+  // not a client bug. Omitted so users don't hit a permanent stuck download;
+  // re-add (streaming: false) once a full download actually completes.
 ]
 
 export const LLM_MODELS: ModelOption[] = [
