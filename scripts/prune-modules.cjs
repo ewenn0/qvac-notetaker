@@ -155,16 +155,43 @@ function walkPackages(dir) {
 }
 
 function pruneSdkExamples() {
-  const examples = path.join(NODE_MODULES, '@qvac', 'sdk', 'dist', 'examples')
-  if (fs.existsSync(examples)) safeRmDir(examples)
+  // Example/demo apps shipped by the SDK and its engine packages. As of SDK
+  // 0.21 the inference engines were split into sibling `@qvac/*` packages and
+  // the demos moved with them (e.g. `@qvac/asr-ggml/examples`,
+  // `@qvac/audiogen-ggml/examples`) — the old `@qvac/sdk/dist/examples` path is
+  // gone. Scan every top-level `@qvac/<pkg>` for an `examples/` dir (and the
+  // legacy dist path) so the prune keeps working regardless of which package
+  // carries the demos. These are never production code — pure demos we never call.
+  const scope = path.join(NODE_MODULES, '@qvac')
+  let pkgs
+  try {
+    pkgs = fs.readdirSync(scope, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const pkg of pkgs) {
+    if (!pkg.isDirectory()) continue
+    for (const rel of ['examples', path.join('dist', 'examples')]) {
+      const dir = path.join(scope, pkg.name, rel)
+      if (fs.existsSync(dir)) safeRmDir(dir)
+    }
+  }
 }
 
 function pruneSdkExpoBits() {
-  // @qvac/sdk/dist/expo/** is a React-Native packaging plugin. We're an
-  // Electron desktop app, so this whole tree is dead weight. ~couple MB
-  // but the symbolic value is "don't ship mobile tooling in a desktop app".
-  const expo = path.join(NODE_MODULES, '@qvac', 'sdk', 'dist', 'expo')
-  if (fs.existsSync(expo)) safeRmDir(expo)
+  // The SDK's Expo / React-Native packaging plugin. We're an Electron desktop
+  // app, so this whole tree is dead weight — "don't ship mobile tooling in a
+  // desktop app". SDK 0.21 moved it from `dist/expo` to `dist/src/expo` (and
+  // also ships a `src/expo` TypeScript copy), so clear all three known layouts.
+  const sdk = path.join(NODE_MODULES, '@qvac', 'sdk')
+  for (const rel of [
+    path.join('dist', 'src', 'expo'),
+    path.join('dist', 'expo'),
+    path.join('src', 'expo')
+  ]) {
+    const dir = path.join(sdk, rel)
+    if (fs.existsSync(dir)) safeRmDir(dir)
+  }
 }
 
 function pruneSourceMaps() {
