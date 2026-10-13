@@ -7,7 +7,8 @@ import { RuntimePanel } from './components/RuntimePanel'
 import { ActionBar } from './components/ActionBar'
 import { TranscriptView } from './components/TranscriptView'
 import { SummaryView } from './components/SummaryView'
-import { SttSettingsDialog, effectiveLanguage } from './components/SttSettingsDialog'
+import { SttSettingsDialog } from './components/SttSettingsDialog'
+import { effectiveLanguage } from './lib/language'
 import {
   SummarySettingsDialog,
   DEFAULT_CTX_SIZE,

@@ -603,13 +603,27 @@ export class QvacService extends EventEmitter {
    */
   async shutdown(): Promise<void> {
     if (!qvac) return
+    // Hard cap the whole teardown: a wedged worker must never block app quit.
+    // If unloadAll/close hang, we fall through and let the process exit anyway
+    // (the OS reaps the bare worker on parent exit as a backstop).
+    const SHUTDOWN_BUDGET_MS = 4000
+    const withTimeout = <T>(p: Promise<T>, label: string): Promise<T | void> =>
+      Promise.race([
+        p,
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            console.error(`[qvac] ${label} timed out after ${SHUTDOWN_BUDGET_MS}ms — forcing quit`)
+            resolve()
+          }, SHUTDOWN_BUDGET_MS)
+        )
+      ])
     try {
-      await this.unloadAll()
+      await withTimeout(this.unloadAll(), 'unloadAll during shutdown')
     } catch (err) {
       console.error('[qvac] unloadAll during shutdown failed:', err)
     }
     try {
-      await qvac.close()
+      await withTimeout(qvac.close(), 'sdk.close() during shutdown')
     } catch (err) {
       console.error('[qvac] sdk.close() during shutdown failed:', err)
     }

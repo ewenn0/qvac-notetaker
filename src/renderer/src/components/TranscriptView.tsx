@@ -94,6 +94,11 @@ function AudioPlayer({ src }: { src: string }): JSX.Element {
     setPlaying(false)
     setCurrentTime(0)
     setDuration(0)
+    // Intentionally only re-run when the source changes: we carry the *current*
+    // rate onto the new <audio> element, but live rate changes are applied
+    // directly in the speed control (see onChange below), so including `rate`
+    // here would wrongly reset playback position every time the user changes speed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src])
 
   const togglePlay = async (): Promise<void> => {
