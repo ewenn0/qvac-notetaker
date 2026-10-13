@@ -127,8 +127,6 @@ function modelTypeFor(optionId: string, kind: ModelKind): 'whisper' | 'parakeet'
   return 'whisper'
 }
 
-export type ProgressCallback = (p: ModelLoadProgress) => void
-
 function stringifyProgressStatus(status: unknown): string | undefined {
   if (status == null) return undefined
   if (typeof status === 'string') return status

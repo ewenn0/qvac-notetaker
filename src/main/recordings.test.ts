@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { dateStamp, sanitizeName, dedupedPath } from './recordings.js'
 
@@ -25,13 +26,14 @@ describe('sanitizeName', () => {
 })
 
 describe('dedupedPath', () => {
+  // Build paths with join() so expectations use the host OS separator
+  // (dedupedPath internally uses path.join, which is '\' on Windows, '/' on POSIX).
+  const desired = join('r', '2026-05-30 Recording')
   it('returns the path unchanged when it is free', () => {
-    expect(dedupedPath('/r/2026-05-30 Recording', () => false)).toBe('/r/2026-05-30 Recording')
+    expect(dedupedPath(desired, () => false)).toBe(desired)
   })
   it('appends " 1", " 2", ... past existing collisions', () => {
-    const taken = new Set(['/r/2026-05-30 Recording', '/r/2026-05-30 Recording 1'])
-    expect(dedupedPath('/r/2026-05-30 Recording', (p) => taken.has(p))).toBe(
-      '/r/2026-05-30 Recording 2'
-    )
+    const taken = new Set([desired, `${desired} 1`])
+    expect(dedupedPath(desired, (p) => taken.has(p))).toBe(`${desired} 2`)
   })
 })
