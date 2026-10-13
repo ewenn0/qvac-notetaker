@@ -348,6 +348,21 @@ export class QvacService extends EventEmitter {
     // our deliberately-loose `modelSrc: unknown` / `modelConfig:
     // Record<string, unknown>` (we resolve those generically by export name)
     // back to the SDK's typed union.
+    // Advisory, non-blocking pre-flight (SDK 0.21): before a first download, ask
+    // whether this model is likely to fit in memory and, if not, thread a
+    // warning through the progress message the user already sees during load.
+    // Never prevents the load; see `preflightFit`.
+    const fitWarning = await this.preflightFit(sdk, optionId, modelType, modelSrc, modelConfig)
+    if (fitWarning) {
+      this.emitProgress({
+        kind,
+        modelOptionId: optionId,
+        percentage: 0,
+        state: 'downloading',
+        message: fitWarning
+      })
+    }
+
     const modelId = await sdk.loadModel({
       modelSrc,
       modelType,
@@ -355,7 +370,8 @@ export class QvacService extends EventEmitter {
       onProgress: (p: ModelProgressUpdate) => {
         const pct = typeof p.percentage === 'number' ? p.percentage : 0
         const state: ModelLoadProgress['state'] = pct < 100 ? 'downloading' : 'loading'
-        this.emitProgress({ kind, modelOptionId: optionId, percentage: pct, state })
+        // Keep the fit warning (if any) visible for the whole download/load.
+        this.emitProgress({ kind, modelOptionId: optionId, percentage: pct, state, message: fitWarning })
       }
     } as LoadModelOptions)
 
@@ -397,6 +413,59 @@ export class QvacService extends EventEmitter {
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * Advisory, best-effort memory-fit check before a first download (SDK 0.21's
+   * `assessModelFit`). Returns a short warning string when the model is
+   * "likely-too-large" for this device, otherwise undefined.
+   *
+   * Never throws and never blocks a load: assessModelFit is explicitly advisory
+   * ("neither denies a load"), and `unknown` is a normal answer on uncalibrated
+   * platforms (so we only act on a definite "likely-too-large"). Skipped when
+   * the model is already on disk — it has loaded before, so the verdict adds
+   * nothing and we avoid a needless registry round-trip on the offline re-load
+   * path.
+   */
+  private async preflightFit(
+    sdk: QvacModule,
+    optionId: string,
+    modelType: 'whisper' | 'parakeet' | 'llm',
+    modelSrc: unknown,
+    modelConfig: Record<string, unknown>
+  ): Promise<string | undefined> {
+    try {
+      if (await this.modelFilesPresent([optionId])) return undefined
+    } catch {
+      /* couldn't tell if present — fall through and assess */
+    }
+    try {
+      const assess = (sdk as unknown as {
+        assessModelFit?: (i: unknown) => Promise<{
+          verdict?: string
+          models?: { name?: string; verdict?: string; reasons?: string[] }[]
+        }>
+      }).assessModelFit
+      if (typeof assess !== 'function') return undefined
+      const res = await assess({ models: [{ modelSrc, modelType, modelConfig }] })
+      const per = res.models?.find((m) => m.name === optionId) ?? res.models?.[0]
+      const verdict = per?.verdict ?? res.verdict
+      console.error(
+        `[qvac] assessModelFit(${optionId}) -> ${verdict ?? 'n/a'}` +
+          (per?.reasons?.length ? ` (${per.reasons.join('; ')})` : '')
+      )
+      if (verdict === 'likely-too-large') {
+        return `\u26a0 ${optionId} may not fit in ${
+          this.device === 'gpu' ? 'GPU' : 'system'
+        } memory — loading anyway; it may fail or run slowly.`
+      }
+    } catch (err) {
+      console.error(
+        '[qvac] assessModelFit failed (non-fatal):',
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+    return undefined
   }
 
   async unload(kind: ModelKind): Promise<void> {
