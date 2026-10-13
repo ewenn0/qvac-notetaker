@@ -28,9 +28,10 @@
     "build:linux": "npm run build && electron-builder --linux --config"
   },
   "//b4a": "Direct dependency to work around a phantom dependency in bogon@1.3.0 (pulled in transitively via @qvac/sdk -> @qvac/rag -> hyperdht). bogon/index.js does require('b4a') but does not declare b4a in its package.json, so it only resolves when some other package hoists b4a to the top level. npm's tree for the SDK nests every b4a copy under individual consumers and leaves the top level empty, so the bare worker aborts at startup with MODULE_NOT_FOUND: 'b4a'. Declaring it here guarantees a top-level node_modules/b4a that bogon can resolve, deterministically and in packaged builds.",
+  "//inference": "Declared directly because qvac/worker.entry.mjs imports @qvac/inference/* (registerPlugins + the llamacpp-completion/whispercpp-transcription/parakeet-transcription plugins) to build our slimmed custom bare worker. It's otherwise only a transitive dep of @qvac/sdk, so importing it directly would be a phantom dependency. Keep this version range in lockstep with @qvac/sdk's own @qvac/inference range on every SDK bump (0.21: sdk wants ^0.21.0).",
   "dependencies": {
-    "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@qvac/inference": "^0.21.0",
     "@qvac/sdk": "^0.21.0",
     "b4a": "^1.8.1",
     "electron-updater": "^6.3.9",
@@ -61,5 +62,5 @@
     "vite": "^5.4.8",
     "vitest": "^2.1.4"
   },
-  "//overrides": "Do NOT stub @qvac/* native packages. The SDK worker (bare runtime) eagerly imports every plugin at boot from server/bare/plugins/index.js, so even unused ones must resolve to real modules. A CJS stub breaks bare's ESM loader and the worker exits with code 1 before IPC comes up. Slimming is done exclusively by scripts/prune-modules.cjs, which removes foreign-platform prebuilds (darwin/linux/ios/android) and source maps — that's still ~50% of the install."
+  "//overrides": "Do NOT stub @qvac/* native packages. We ship a custom slimmed bare worker (qvac/worker.entry.mjs, auto-discovered by the SDK's node-rpc-client resolveWorkerPath) that calls registerPlugins() with ONLY llamacpp-completion + whispercpp-transcription + parakeet-transcription — so unused inference engines are never imported and can be deleted outright. A CJS stub still breaks bare's ESM loader (worker exits code 1 before IPC comes up), so the three plugins we DO register, plus their deps, must remain real modules. Slimming is done exclusively by scripts/prune-modules.cjs, which (1) deletes unused @qvac/* engine packages listed in UNUSED_SDK_ADDONS (audiogen/bci/ocr/tts etc.), and (2) strips foreign-platform prebuilds (darwin/linux/ios/android) and source maps. Keep the plugin set in sync across qvac/worker.entry.mjs, qvac.config.json, and prune-modules.cjs."
 }
