@@ -298,18 +298,19 @@ export class QvacService extends EventEmitter {
       // the GGUF. Passing any legacy `parakeet*Src` field would now throw.
       modelConfig = { useGPU: useGpu }
     } else if (modelType === 'llm') {
-      // llama.cpp needs BOTH `device: 'gpu'` AND `gpu_layers > 0` to actually
-      // offload to the GPU; setting only `device` quietly keeps every layer
-      // on CPU. 99 means "all layers" for any model we ship.
       modelSrc = await resolveSimpleModelSrc(optionId)
       const ctxSize = options?.ctxSize ?? this.lastLlmCtxSize
       this.lastLlmCtxSize = ctxSize
-      modelConfig = {
-        device: useGpu ? 'gpu' : 'cpu',
-        gpu_layers: useGpu ? 99 : 0,
-        'main-gpu': 0,
-        ctx_size: ctxSize
-      }
+      // SDK 0.21 changed GPU placement: `gpu_layers` is now UNSET by default so
+      // qvac-fabric can place layers automatically to fit available device
+      // memory, and explicitly setting a count *pins* it and aborts that fit
+      // (risking OOM on smaller GPUs). This replaces the old `gpu_layers: 99`
+      // pin, which was a 0.12-era workaround for `device: 'gpu'` alone leaving
+      // every layer on CPU — no longer the case in 0.21. So on GPU we pass only
+      // `device: 'gpu'` and let fabric decide; on CPU we still pin 0.
+      modelConfig = useGpu
+        ? { device: 'gpu', 'main-gpu': 0, ctx_size: ctxSize }
+        : { device: 'cpu', gpu_layers: 0, ctx_size: ctxSize }
     } else {
       // Whisper. The streaming pipeline only emits text when its VAD detects
       // a complete speech segment, so we MUST attach a VAD model — otherwise
