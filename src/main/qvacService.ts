@@ -729,7 +729,7 @@ export class QvacService extends EventEmitter {
   /**
    * Real (voice-based) speaker diarisation over the most recent recording.
    *
-   * Pipeline (mirrors `node_modules/@qvac/sdk/dist/examples/transcription/parakeet-sortformer.js`):
+   * Pipeline (mirrors the SDK's Parakeet + SortFormer transcription example):
    *   1. Flatten the buffered Int16 PCM into a 16 kHz mono WAV file.
    *   2. Load the Sortformer GGUF and run a one-shot transcribe on the file
    *      — it returns lines like "Speaker 0: 1.23s - 4.56s".

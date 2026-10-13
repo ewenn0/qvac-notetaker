@@ -195,7 +195,7 @@ function pruneSdkExpoBits() {
 }
 
 function pruneSourceMaps() {
-  // `.js.map` and `.d.ts.map` files across @qvac/sdk and our own stubs.
+  // `.js.map` and `.d.ts.map` files across the @qvac packages.
   // We don't ship source maps to end users and they bloat the install by
   // 10-50% for TypeScript packages. Bare runtime debug stays useful in dev
   // because Vite generates its own maps for our renderer code.
