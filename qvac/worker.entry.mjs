@@ -21,15 +21,21 @@
  * packages from `node_modules`.
  *
  * Keep this plugin list in sync with `qvac.config.json`.
+ *
+ * The imports below mirror the SDK's own default worker
+ * (`@qvac/sdk/dist/src/worker/index.js`) for the installed version: the worker
+ * lifecycle lives in `@qvac/sdk/worker-lifecycle` and the plugins + registry
+ * come from `@qvac/inference`. If a future SDK bump moves these, re-check that
+ * default worker and update the specifiers here (and re-run `npm run dev`).
  */
-import { initializeWorkerCore, ensureRPCSetup } from '@qvac/sdk/worker-core'
-import { registerPlugins } from '@qvac/sdk/plugins'
+import { initializeWorker, ensureRPCSetup } from '@qvac/sdk/worker-lifecycle'
+import { registerPlugins } from '@qvac/inference/plugins'
 import { getServerLogger } from '@qvac/sdk/logging'
-import { llmPlugin } from '@qvac/sdk/llamacpp-completion/plugin'
-import { whisperPlugin } from '@qvac/sdk/whispercpp-transcription/plugin'
-import { parakeetPlugin } from '@qvac/sdk/parakeet-transcription/plugin'
+import { llmPlugin } from '@qvac/inference/llamacpp-completion/plugin'
+import { whisperPlugin } from '@qvac/inference/whispercpp-transcription/plugin'
+import { parakeetPlugin } from '@qvac/inference/parakeet-transcription/plugin'
 
-const { hasRPCConfig } = initializeWorkerCore()
+const { hasRPCConfig } = initializeWorker()
 const logger = getServerLogger()
 logger.info('🐻 QVAC Notetaker worker — LLM + Whisper + Parakeet plugins only')
 
