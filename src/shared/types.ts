@@ -18,7 +18,11 @@ export interface ModelOption {
   kind: ModelKind
   /** Approximate disk size, shown in UI before download. */
   sizeHint?: string
-  /** Whether the model supports streaming transcription (whisper / parakeet CTC). */
+  /**
+   * Whether the engine streams natively (whisper / parakeet CTC). Batch-only
+   * models (`streaming: false`) still record live: the main process cuts the
+   * mic stream at pauses and transcribes each phrase as a whole.
+   */
   streaming?: boolean
   /** Optional context window bounds for LLM settings. */
   ctxSizeMin?: number
@@ -34,12 +38,12 @@ export interface ModelOption {
  * the `PARAKEET_*` ids below are plain SDK constants (Q8 quant), just like
  * Whisper, rather than composite encoder/decoder/vocab presets.
  *
- * Every id here is a model `name` in the 0.21 registry (`@qvac/inference/models`,
+ * Every id here is a model `name` in the 0.24 registry (`@qvac/inference/models`,
  * re-exported by `@qvac/sdk`). Keep STT ids to the whisper/parakeet engines and
  * LLM ids to the llamacpp-completion engine — those are the only plugins the
- * worker registers (`qvac/worker.entry.mjs`). New Parakeet variants must start
- * with `PARAKEET_TDT` to be treated as batch; any other `PARAKEET_*` id is
- * driven through the streaming CTC path (see `isParakeetBatch` in qvacService).
+ * worker registers (`qvac/worker.entry.mjs`). Batch Parakeet variants (TDT and
+ * TranscribePsy) are listed in `isParakeetBatch` in qvacService; any other
+ * `PARAKEET_*` id is driven through the streaming CTC path.
  */
 export const STT_MODELS: ModelOption[] = [
   { id: 'WHISPER_TINY', label: 'Whisper Tiny (multilingual)', kind: 'stt', sizeHint: '~75 MB', streaming: true },
@@ -50,23 +54,33 @@ export const STT_MODELS: ModelOption[] = [
   { id: 'WHISPER_EN_SMALL_Q8_0', label: 'Whisper Small Q8 (English)', kind: 'stt', sizeHint: '~250 MB', streaming: true },
   { id: 'WHISPER_LARGE_V3_TURBO', label: 'Whisper Large v3 Turbo', kind: 'stt', sizeHint: '~1.5 GB', streaming: true },
   { id: 'PARAKEET_CTC_0_6B_Q8_0', label: 'Parakeet CTC Q8 (EN, streaming)', kind: 'stt', sizeHint: '~700 MB', streaming: true },
-  { id: 'PARAKEET_TDT_0_6B_V3_Q8_0', label: 'Parakeet TDT v3 Q8 (EN, batch)', kind: 'stt', sizeHint: '~715 MB', streaming: false },
-  // Larger, more accurate batch TDT (single-file GGUF, same loader path as the
-  // 0.6B). Batch-only like the other TDT — use via "Load audio…", not live
-  // recording. `isParakeetBatch()` keys off the PARAKEET_TDT prefix.
-  { id: 'PARAKEET_TDT_1_1B_Q8_0', label: 'Parakeet TDT 1.1B Q8 (EN, batch)', kind: 'stt', sizeHint: '~1.2 GB', streaming: false }
+  // 25 European languages (incl. Russian and Ukrainian), punctuation and casing.
+  { id: 'PARAKEET_TDT_0_6B_V3_Q8_0', label: 'Parakeet TDT v3 Q8 (25 languages)', kind: 'stt', sizeHint: '~715 MB', streaming: false },
+  // TranscribePsy EU 250M (@qvac/sdk 0.24): the same 25 languages in a lighter
+  // model, with per-language CAFE adapters and an English/other gate inside the
+  // GGUF. Loaded with a `language` route of 'en' | 'other' | 'auto'.
+  { id: 'PARAKEET_TRANSCRIBEPSY_250M_EU_Q8_0', label: 'TranscribePsy EU Q8 (25 languages)', kind: 'stt', sizeHint: '~307 MB', streaming: false },
+  // Larger, more accurate English-only batch TDT (same loader path as the 0.6B).
+  { id: 'PARAKEET_TDT_1_1B_Q8_0', label: 'Parakeet TDT 1.1B Q8 (English)', kind: 'stt', sizeHint: '~1.2 GB', streaming: false }
 ]
 
+/**
+ * Summary / rewrite models: the Qwen3.5 family QVAC Dictate uses for cleanup,
+ * in the MTP builds added in @qvac/sdk 0.24. MTP models carry their own
+ * multi-token-prediction head; loaded with `spec_type: 'draft-mtp'` they draft
+ * a few tokens ahead and verify them, so generation is faster while the output
+ * keeps plain decoding's distribution (see `isMtpModel` in qvacService).
+ * Reasoning is switched off for every call (`reasoning_budget: 0`).
+ */
 export const LLM_MODELS: ModelOption[] = [
-  { id: 'QWEN3_600M_INST_Q4', label: 'Qwen3 0.6B Instruct Q4', kind: 'llm', sizeHint: '~450 MB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
-  { id: 'LLAMA_3_2_1B_INST_Q4_0', label: 'Llama 3.2 1B Instruct Q4', kind: 'llm', sizeHint: '~770 MB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
-  { id: 'QWEN3_1_7B_INST_Q4', label: 'Qwen3 1.7B Instruct Q4', kind: 'llm', sizeHint: '~1.1 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
-  { id: 'GEMMA4_2B_MULTIMODAL_Q4_K_M', label: 'Gemma 4 2B Instruct Q4', kind: 'llm', sizeHint: '~3.2 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
-  { id: 'QWEN3_4B_INST_Q4_K_M', label: 'Qwen3 4B Instruct Q4', kind: 'llm', sizeHint: '~2.5 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 },
-  // Highest-quality option; needs the most RAM/VRAM. Text-only via the
-  // llamacpp-completion plugin, same loader path as the other Qwen3 entries.
-  { id: 'QWEN3_8B_INST_Q4_K_M', label: 'Qwen3 8B Instruct Q4', kind: 'llm', sizeHint: '~4.7 GB', ctxSizeMin: 2048, ctxSizeMax: 32768 }
+  { id: 'QWEN3_5_0_8B_MTP_Q4_K_M', label: 'Qwen3.5 0.8B · fastest', kind: 'llm', sizeHint: '~550 MB', ctxSizeMin: 2048, ctxSizeMax: 65536 },
+  { id: 'QWEN3_5_2B_MTP_Q4_K_M', label: 'Qwen3.5 2B · small and quick', kind: 'llm', sizeHint: '~1.3 GB', ctxSizeMin: 2048, ctxSizeMax: 65536 },
+  { id: 'QWEN3_5_4B_MTP_Q4_K_M', label: 'Qwen3.5 4B · better wording', kind: 'llm', sizeHint: '~2.8 GB', ctxSizeMin: 2048, ctxSizeMax: 65536 },
+  { id: 'QWEN3_5_9B_MTP_Q4_K_M', label: 'Qwen3.5 9B · best wording', kind: 'llm', sizeHint: '~5.9 GB', ctxSizeMin: 2048, ctxSizeMax: 65536 }
 ]
+
+/** Picked when nothing (or a model no longer listed) was saved. */
+export const DEFAULT_LLM_MODEL_ID = 'QWEN3_5_4B_MTP_Q4_K_M'
 
 export interface ModelLoadProgress {
   kind: ModelKind

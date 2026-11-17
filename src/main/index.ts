@@ -378,7 +378,9 @@ function setupIpc(): void {
       filePath = res.filePaths[0]
     }
     if (!filePath) return null
-    return qvacService.transcribeFile(filePath)
+    return qvacService.transcribeFile(filePath, (delta) => {
+      broadcast(Channels.TranscriptDelta, delta)
+    })
   })
 
   // -- LLM rewrite --

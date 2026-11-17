@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { LLM_MODELS, STT_MODELS, type ModelLoadProgress } from '@shared/types'
+import { DEFAULT_LLM_MODEL_ID, LLM_MODELS, STT_MODELS, type ModelLoadProgress } from '@shared/types'
 import { loadSetting, saveSetting } from '../lib/persist'
 
 export interface UseModelsArgs {
@@ -20,8 +20,6 @@ export interface UseModels {
   llmProgress?: ModelLoadProgress
   sttLoaded: boolean
   llmLoaded: boolean
-  /** True when the selected STT model can drive a live mic stream. */
-  selectedSttIsStreaming: boolean
   loadStt: () => Promise<void>
   unloadStt: () => Promise<void>
   loadLlm: (ctxSizeOverride?: number) => Promise<void>
@@ -42,8 +40,8 @@ export function useModels({ setError, getSttLanguage, getLlmCtxSize }: UseModels
     return STT_MODELS.some((m) => m.id === saved) ? saved : STT_MODELS[0].id
   })
   const [llmModelId, setLlmModelId] = useState(() => {
-    const saved = loadSetting<string>('llmModelId', LLM_MODELS[0].id)
-    return LLM_MODELS.some((m) => m.id === saved) ? saved : LLM_MODELS[0].id
+    const saved = loadSetting<string>('llmModelId', DEFAULT_LLM_MODEL_ID)
+    return LLM_MODELS.some((m) => m.id === saved) ? saved : DEFAULT_LLM_MODEL_ID
   })
   const [sttProgress, setSttProgress] = useState<ModelLoadProgress | undefined>()
   const [llmProgress, setLlmProgress] = useState<ModelLoadProgress | undefined>()
@@ -79,21 +77,6 @@ export function useModels({ setError, getSttLanguage, getLlmCtxSize }: UseModels
     })
     return unsub
   }, [])
-
-  // Nudge the user when they pick a non-streaming STT model — they almost
-  // certainly meant to use Load audio… instead of Record. Clear the nudge
-  // automatically when they switch back to a streaming-capable model.
-  useEffect(() => {
-    const opt = STT_MODELS.find((m) => m.id === sttModelId)
-    if (opt && opt.streaming === false) {
-      setError(
-        `${opt.label} is batch-only — it can transcribe an audio file but not a live mic stream. Use "Load audio…" to transcribe a recording, or switch to Whisper / Parakeet CTC for live capture.`
-      )
-    } else {
-      // Clear only our own batch-only nudge; leave unrelated errors intact.
-      setError((prev) => (prev?.includes('batch-only') ? null : prev))
-    }
-  }, [sttModelId, setError])
 
   const loadStt = useCallback(async () => {
     setError(null)
@@ -136,9 +119,6 @@ export function useModels({ setError, getSttLanguage, getLlmCtxSize }: UseModels
     setLlmProgress(undefined)
   }, [])
 
-  const selectedSttIsStreaming =
-    STT_MODELS.find((m) => m.id === sttModelId)?.streaming !== false
-
   return {
     sttModelId,
     setSttModelId,
@@ -148,7 +128,6 @@ export function useModels({ setError, getSttLanguage, getLlmCtxSize }: UseModels
     llmProgress,
     sttLoaded,
     llmLoaded,
-    selectedSttIsStreaming,
     loadStt,
     unloadStt,
     loadLlm,

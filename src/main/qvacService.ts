@@ -28,6 +28,7 @@ import {
   buildWavInt16,
   mergeSpeakers
 } from './audioUtils.js'
+import { PhraseSegmenter, type Phrase } from './phraseSegmenter.js'
 
 // We import the SDK lazily so the app can still boot if @qvac/sdk is missing
 // (e.g. before `npm install`). All real calls require a successful load.
@@ -101,11 +102,43 @@ const PARAKEET_TDT = 'PARAKEET_TDT_0_6B_V3_Q8_0'
 const PARAKEET_SORTFORMER = 'PARAKEET_SORTFORMER_4SPK_V2_1_Q8_0'
 
 /**
- * Batch-only TDT model — the SDK refuses to stream it. Streaming-capable
- * Parakeet (the CTC GGUF, `PARAKEET_CTC_0_6B_Q8_0`) is everything else.
+ * Batch-only Parakeet models (TDT and TranscribePsy) — the SDK refuses to
+ * stream them, so live recording cuts the mic stream into phrases instead
+ * (see `PhraseSegmenter`). Streaming-capable Parakeet (the CTC GGUF,
+ * `PARAKEET_CTC_0_6B_Q8_0`) is everything else.
  */
 function isParakeetBatch(optionId: string): boolean {
-  return optionId.startsWith('PARAKEET_TDT')
+  return optionId.startsWith('PARAKEET_TDT') || optionId.startsWith('PARAKEET_TRANSCRIBEPSY')
+}
+
+/**
+ * TranscribePsy picks a branch rather than a language: its English trunk, its
+ * per-language adapters ('other'), or its built-in gate deciding per clip
+ * ('auto'). The renderer's hint is 'auto' or a single language code.
+ */
+/** LLM builds that ship multi-token-prediction layers (@qvac/sdk 0.24). */
+function isMtpModel(optionId: string): boolean {
+  return optionId.includes('_MTP_')
+}
+
+/**
+ * Per-call sampling for the note title: a 3-7 word title gains nothing from a
+ * reasoning phase. (Qwen3's old "/no_think" prompt suffix is not a Qwen3.5
+ * switch; the SDK's budget is.) Summaries and rewrites keep reasoning on.
+ */
+const NO_REASONING = { reasoning_budget: 0 }
+
+/** Remove inline reasoning blocks, closed or left open by a cut-off answer. */
+export function stripThinking(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/i, '')
+    .trim()
+}
+
+function transcribePsyRoute(language: string | undefined): 'en' | 'other' | 'auto' {
+  if (!language || language === 'auto') return 'auto'
+  return language === 'en' ? 'en' : 'other'
 }
 
 export interface LoadedModel {
@@ -174,6 +207,18 @@ export class QvacService extends EventEmitter {
    */
   private activeStreamPcmFormat: 'f32le' | 's16le' = 'f32le'
   private streamDonePromise: Promise<void> | null = null
+  /**
+   * Live recording with a batch-only model: the segmenter cuts the stream at
+   * pauses, and each phrase is transcribed in turn on `phraseQueue`. Null when
+   * the active session streams natively (or nothing is recording).
+   */
+  private phraseSession: {
+    segmenter: PhraseSegmenter
+    queue: Promise<void>
+    dir: string
+    count: number
+    onDelta: (delta: TranscriptDelta) => void
+  } | null = null
   /** Wall-clock time (ms) of the most recent `pushAudio()` call. */
   private lastAudioPushAt?: number
   private lastSttLatencyMs?: number
@@ -207,6 +252,9 @@ export class QvacService extends EventEmitter {
    */
   private audioBuffer: Int16Array[] = []
   private audioBufferSamples = 0
+  /** True when `audioBuffer` holds an imported file (set by the renderer's
+   * decode on "Load audio"), false when it holds a live recording. */
+  private audioBufferIsImport = false
   private readonly SAMPLE_RATE = 16000
   /**
    * Diarisation models are kept loaded across `diarize()` calls so repeat runs
@@ -295,6 +343,10 @@ export class QvacService extends EventEmitter {
       // Only hint the device — TDT/CTC/Sortformer/EOU is auto-detected from
       // the GGUF. Passing any legacy `parakeet*Src` field would now throw.
       modelConfig = { useGPU: useGpu }
+      if (optionId.startsWith('PARAKEET_TRANSCRIBEPSY')) {
+        this.lastSttLanguage = options?.language
+        modelConfig.language = transcribePsyRoute(options?.language)
+      }
     } else if (modelType === 'llm') {
       modelSrc = await resolveSimpleModelSrc(optionId)
       const ctxSize = options?.ctxSize ?? this.lastLlmCtxSize
@@ -309,6 +361,11 @@ export class QvacService extends EventEmitter {
       modelConfig = useGpu
         ? { device: 'gpu', 'main-gpu': 0, ctx_size: ctxSize }
         : { device: 'cpu', gpu_layers: 0, ctx_size: ctxSize }
+      // Qwen3.5 reasons before answering; summaries keep that on (its output
+      // arrives as `thinkingDelta` events, never in the content). Only the
+      // note title turns it off per call (see `generateTitle`).
+      // MTP builds draft with their own multi-token-prediction head.
+      if (isMtpModel(optionId)) modelConfig.spec_type = 'draft-mtp'
     } else {
       // Whisper. The streaming pipeline only emits text when its VAD detects
       // a complete speech segment, so we MUST attach a VAD model — otherwise
@@ -645,14 +702,19 @@ export class QvacService extends EventEmitter {
     // Fresh diarisation buffer for the new recording.
     this.audioBuffer = []
     this.audioBufferSamples = 0
+    this.audioBufferIsImport = false
 
-    // Parakeet TDT is a batch model — the SDK throws if asked to stream it.
+    // Batch-only Parakeet (TDT, TranscribePsy): the SDK throws if asked to
+    // stream it, so cut the live stream into phrases and transcribe each one.
     if (this.stt.modelType === 'parakeet' && isParakeetBatch(this.stt.optionId)) {
-      throw new Error(
-        'Parakeet TDT is a batch-only model and cannot be live-recorded. ' +
-          'Use Whisper or Parakeet CTC for live recording, or "Load audio…" to ' +
-          'transcribe a file with TDT.'
-      )
+      this.phraseSession = {
+        segmenter: new PhraseSegmenter({ sampleRate: this.SAMPLE_RATE }),
+        queue: Promise.resolve(),
+        dir: mkdtempSync(join(tmpdir(), 'qvac-phrases-')),
+        count: 0,
+        onDelta
+      }
+      return
     }
 
     const params: Record<string, unknown> = {
@@ -717,6 +779,44 @@ export class QvacService extends EventEmitter {
   }
 
   /**
+   * Queue one phrase of a batch-model recording for transcription. Phrases are
+   * transcribed strictly in order, so the transcript never comes out shuffled
+   * even when the model falls behind the speaker.
+   */
+  private enqueuePhrase(session: NonNullable<QvacService['phraseSession']>, phrase: Phrase): void {
+    const stt = this.stt
+    if (!stt) return
+    const cutAt = performance.now()
+    const path = join(session.dir, `phrase-${session.count++}.wav`)
+    session.queue = session.queue.then(async () => {
+      try {
+        const sdk = await getSdk()
+        writeWavInt16(path, [phrase.samples], this.SAMPLE_RATE)
+        const text = await (sdk as unknown as {
+          transcribe: (a: { modelId: string; audioChunk: string }) => Promise<string>
+        }).transcribe({ modelId: stt.modelId, audioChunk: path })
+        const clean = (text ?? '').trim()
+        // Latency here is pause-detection to text: the time from the phrase
+        // being cut to its words appearing.
+        this.lastSttLatencyMs = performance.now() - cutAt
+        this.emit('stats')
+        if (clean) {
+          session.onDelta({
+            text: clean,
+            startSec: phrase.startSec,
+            endSec: phrase.endSec,
+            source: 'parakeet'
+          })
+        }
+      } catch (err) {
+        console.error('[qvac] phrase transcription failed:', err)
+      } finally {
+        rm(path, { force: true }).catch(() => {})
+      }
+    })
+  }
+
+  /**
    * Feed a chunk of audio into the active streaming session.
    *
    * `pcm` is 16 kHz mono Float32 from the renderer's AudioWorklet. We forward it
@@ -751,6 +851,12 @@ export class QvacService extends EventEmitter {
       }
     }
 
+    if (this.phraseSession) {
+      this.lastAudioPushAt = performance.now()
+      const phrases = this.phraseSession.segmenter.push(int16)
+      for (const phrase of phrases) this.enqueuePhrase(this.phraseSession, phrase)
+    }
+
     // Mirror into the diarisation buffer (independent of whether the SDK
     // session accepted the chunk — we want every sample the user recorded).
     this.audioBuffer.push(int16)
@@ -765,6 +871,7 @@ export class QvacService extends EventEmitter {
     }
     this.audioBuffer = [int16]
     this.audioBufferSamples = int16.length
+    this.audioBufferIsImport = true
   }
 
   getBufferedAudioWav(): { data: Buffer; durationSec: number } | null {
@@ -782,6 +889,10 @@ export class QvacService extends EventEmitter {
    * still be growing for ~1s after the renderer triggers the LLM run.
    */
   async stopTranscription(): Promise<void> {
+    if (this.phraseSession) {
+      await this.stopPhraseSession()
+      return
+    }
     const session = this.activeStreamSession
     if (!session) return
     try {
@@ -813,11 +924,50 @@ export class QvacService extends EventEmitter {
   }
 
   /**
-   * One-shot transcription from a local file (used by the "Load audio recording" button).
+   * End a batch-model recording: transcribe the phrase still in progress and
+   * wait for the queue, so auto-summarise sees the whole transcript. The wait
+   * is bounded (a CPU run can fall minutes behind on a long call); phrases
+   * still queued after it keep arriving as transcript deltas.
    */
-  async transcribeFile(filePath: string): Promise<string> {
+  private async stopPhraseSession(): Promise<void> {
+    const session = this.phraseSession
+    if (!session) return
+    this.phraseSession = null
+    const last = session.segmenter.flush()
+    if (last) this.enqueuePhrase(session, last)
+    const done = session.queue.finally(() => rmSync(session.dir, { recursive: true, force: true }))
+    try {
+      await Promise.race([
+        done,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('phrase queue timeout')), 60_000)
+        )
+      ])
+    } catch (err) {
+      console.error('[qvac] phrase queue drain:', err)
+    }
+  }
+
+  /**
+   * Transcription of a local file (used by the "Load audio recording" button).
+   *
+   * When the renderer has already decoded the file into the audio buffer (it
+   * does on every import, for speaker detection), the buffer is cut into
+   * phrases and transcribed phrase by phrase, each one reported through
+   * `onDelta` as it lands. That avoids the SDK's decoder cap (64 MiB of PCM,
+   * about 35 minutes at 16 kHz, not configurable through the SDK), skips the
+   * silences models invent words in, and shows progress on long recordings.
+   * Without a decoded buffer it falls back to handing the SDK the file path.
+   */
+  async transcribeFile(
+    filePath: string,
+    onDelta?: (delta: TranscriptDelta) => void
+  ): Promise<string> {
     if (!this.stt) throw new Error('No STT model loaded.')
     const sdk = await getSdk()
+    if (this.audioBufferIsImport && this.audioBufferSamples > 0) {
+      return this.transcribeBufferInPhrases(sdk, this.stt.modelId, onDelta)
+    }
     try {
       const text = await (sdk as unknown as {
         transcribe: (a: unknown) => Promise<string>
@@ -828,6 +978,49 @@ export class QvacService extends EventEmitter {
       return text
     } catch (err) {
       throw this.translateSdkError(sdk, err)
+    }
+  }
+
+  /** See `transcribeFile`: the decoded import, phrase by phrase, in order. */
+  private async transcribeBufferInPhrases(
+    sdk: QvacModule,
+    modelId: string,
+    onDelta?: (delta: TranscriptDelta) => void
+  ): Promise<string> {
+    const transcribe = (sdk as unknown as {
+      transcribe: (a: { modelId: string; audioChunk: string }) => Promise<string>
+    }).transcribe
+    const flat = flattenInt16(this.audioBuffer, this.audioBufferSamples)
+    const segmenter = new PhraseSegmenter({ sampleRate: this.SAMPLE_RATE })
+    const dir = mkdtempSync(join(tmpdir(), 'qvac-file-'))
+    const texts: string[] = []
+    let count = 0
+    const run = async (phrase: Phrase): Promise<void> => {
+      const path = join(dir, `phrase-${count++}.wav`)
+      writeWavInt16(path, [phrase.samples], this.SAMPLE_RATE)
+      try {
+        const text = ((await transcribe({ modelId, audioChunk: path })) ?? '').trim()
+        if (!text) return
+        texts.push(text)
+        onDelta?.({ text, startSec: phrase.startSec, endSec: phrase.endSec, source: 'file' })
+      } finally {
+        rmSync(path, { force: true })
+      }
+    }
+    try {
+      // Ten seconds at a time keeps only the phrases in flight in memory, not
+      // a second copy of an hour-long recording.
+      const step = this.SAMPLE_RATE * 10
+      for (let at = 0; at < flat.length; at += step) {
+        for (const phrase of segmenter.push(flat.subarray(at, at + step))) await run(phrase)
+      }
+      const last = segmenter.flush()
+      if (last) await run(last)
+      return texts.join(' ')
+    } catch (err) {
+      throw this.translateSdkError(sdk, err)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   }
 
@@ -1062,16 +1255,12 @@ export class QvacService extends EventEmitter {
       'in Russian, respond in Russian; and so on for any language. Never translate — ' +
       'keep section headings and all prose in the transcript language.'
 
-    // Qwen3 ships with <think> reasoning enabled by default. For a 0.6B model
-    // on CPU the thinking phase alone can take >10s before a single content
-    // token appears, inflating perceived TTFT. The official escape hatch is
-    // appending "/no_think" to the user message. It's a no-op for Llama 3.x.
-    const isQwen = this.llm.optionId.startsWith('QWEN')
-    const userContent = isQwen ? `${text}\n\n/no_think` : text
-
+    // Reasoning stays on for summaries and rewrites. It streams as
+    // `thinkingDelta` events, which are not part of the note: only
+    // `contentDelta` text reaches `onDelta`.
     const history = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent }
+      { role: 'user', content: text }
     ]
 
     const startedAt = performance.now()
@@ -1101,12 +1290,22 @@ export class QvacService extends EventEmitter {
       // balloons to 100+ GB over time. Disable it; the in-memory KV cache used
       // during a single inference (and the cacheTokens/promptTokens stats) is
       // unaffected.
-      kvCache: false
+      kvCache: false,
+      // Qwen3.5 writes its reasoning inline as <think>…</think>. Without this
+      // the reasoning streams as ordinary content, straight into the summary.
+      // With it, the SDK moves those blocks into `thinkingDelta` events.
+      captureThinking: true
     })
 
     try {
       for await (const event of result.events) {
-        if (event.type === 'contentDelta' && event.text) {
+        if (event.type === 'thinkingDelta' && firstTokenAt === undefined) {
+          // TTFT is the model starting to answer, reasoning included; timing
+          // it at the first content token would report the whole think phase.
+          firstTokenAt = performance.now()
+          this.lastTtftMs = firstTokenAt - startedAt
+          this.emit('stats')
+        } else if (event.type === 'contentDelta' && event.text) {
           if (firstTokenAt === undefined) {
             firstTokenAt = performance.now()
             // Lock in TTFT the moment the first token lands so the runtime
@@ -1139,7 +1338,9 @@ export class QvacService extends EventEmitter {
       this.emit('stats')
 
       return {
-        contentText: final.contentText ?? buffer,
+        // `captureThinking` is best-effort; never let a reasoning block that
+        // slipped through end up in the saved note.
+        contentText: stripThinking(final.contentText ?? buffer),
         tokensPerSecond: this.lastTokensPerSecond,
         ttftMs: this.lastTtftMs
       }
@@ -1237,9 +1438,7 @@ export class QvacService extends EventEmitter {
     if (!this.llm) throw new Error('No LLM model loaded.')
     const sdk = await getSdk()
 
-    const trimmed = text.slice(0, 4000)
-    const isQwen = this.llm.optionId.startsWith('QWEN')
-    const userContent = isQwen ? `${trimmed}\n\n/no_think` : trimmed
+    const userContent = text.slice(0, 4000)
     const history = [
       {
         role: 'system',
@@ -1255,7 +1454,13 @@ export class QvacService extends EventEmitter {
         events: AsyncIterable<{ type: string; text?: string }>
         final: Promise<{ contentText?: string }>
       }
-    }).completion({ modelId: this.llm.modelId, history, stream: true, kvCache: false })
+    }).completion({
+      modelId: this.llm.modelId,
+      history,
+      stream: true,
+      generationParams: NO_REASONING,
+      kvCache: false
+    })
 
     try {
       let buffer = ''

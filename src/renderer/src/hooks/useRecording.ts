@@ -331,6 +331,9 @@ export function useRecording({ sttLoaded, llmLoaded, setError, doc }: UseRecordi
     }, 500)
 
     try {
+      // Phrases stream in as transcript deltas while the file is transcribed;
+      // start from an empty transcript, then settle on the full result.
+      doc.setTranscript('')
       const text = await window.notetakerAPI.transcribeFile(importedFilePath)
       clearTranscribeTimer()
       setTranscribeProgress(100)

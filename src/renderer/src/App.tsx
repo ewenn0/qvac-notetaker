@@ -110,7 +110,7 @@ function App(): JSX.Element {
 
   // Diarisation swaps the STT slot temporarily; recording during that window
   // would race the model load and probably crash the SDK.
-  const canRecord = models.sttLoaded && models.selectedSttIsStreaming && !recording.diarizing
+  const canRecord = models.sttLoaded && !recording.diarizing
   const canRewrite = models.llmLoaded && !doc.rewriting
   const liveTranscriptScroll = recording.recordingState === 'recording'
 

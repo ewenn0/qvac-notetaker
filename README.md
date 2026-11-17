@@ -32,8 +32,10 @@ summarise the transcript. No data leaves your machine.
 - Save (Markdown) of either pane — the dialog opens in the active session folder
 - STT model picker with download/load progress bar (Whisper Tiny / Base Q8 /
   Small Q8 / EN Base Q8 / Large v3 Turbo; Parakeet CTC for live streaming;
-  Parakeet TDT for batch file transcription)
-- LLM picker with the same UI (Qwen3 0.6B / 1.7B / 4B, Llama 3.2 1B, Gemma 4 2B)
+  Parakeet TDT v3 and TranscribePsy EU, 25 languages, which record live by
+  cutting the stream into phrases at pauses and skipping silence)
+- LLM picker with the same UI (Qwen3.5 0.8B / 2B / 4B / 9B MTP builds, with
+  multi-token-prediction drafting on; reasoning on for summaries)
 - AI runtime panel: CPU/GPU toggle, last TTFT, last tok/s, prompt/context tokens
 - Two synchronised text panes: live transcript (editable, Markdown) and summary
 - Background **auto-update** in packaged builds (electron-updater)

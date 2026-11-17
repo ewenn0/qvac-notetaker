@@ -1,6 +1,6 @@
 {
   "name": "qvac-notetaker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local, private AI notetaker for Windows powered by QVAC SDK",
   "main": "./out/main/index.js",
   "author": "Nikita Manshin",
@@ -31,8 +31,8 @@
   "//inference": "Declared directly because qvac/worker.entry.mjs imports @qvac/inference/* (registerPlugins + the llamacpp-completion/whispercpp-transcription/parakeet-transcription plugins) to build our slimmed custom bare worker. It's otherwise only a transitive dep of @qvac/sdk, so importing it directly would be a phantom dependency. Keep this version range in lockstep with @qvac/sdk's own @qvac/inference range on every SDK bump (0.21: sdk wants ^0.21.0).",
   "dependencies": {
     "@electron-toolkit/utils": "^3.0.0",
-    "@qvac/inference": "^0.21.0",
-    "@qvac/sdk": "^0.21.0",
+    "@qvac/inference": "^0.24.0",
+    "@qvac/sdk": "^0.24.0",
     "b4a": "^1.8.1",
     "electron-updater": "^6.3.9",
     "marked": "^14.1.3"

@@ -23,9 +23,9 @@
  *   4. `.map` files across `@qvac/*`. We don't need source maps for the
  *      production main / preload bundles, and Electron's dev tools already
  *      bypass these for renderer code.
- *   5. The SDK Expo plugin (`@qvac/sdk/dist/expo/**`). It exists for
- *      React-Native users packaging mobile builds — irrelevant for an
- *      Electron desktop app.
+ *   5. The SDK Expo plugin's TypeScript copy and pre-0.21 layout. It exists
+ *      for React-Native users packaging mobile builds. `dist/src/expo` stays:
+ *      the 0.24 desktop client imports helpers from it.
  *
  * The script is idempotent — running it twice is a no-op. It only deletes
  * inside `node_modules`, never anywhere else. If something breaks at
@@ -194,15 +194,15 @@ function pruneSdkExamples() {
 
 function pruneSdkExpoBits() {
   // The SDK's Expo / React-Native packaging plugin. We're an Electron desktop
-  // app, so this whole tree is dead weight — "don't ship mobile tooling in a
-  // desktop app". SDK 0.21 moved it from `dist/expo` to `dist/src/expo` (and
-  // also ships a `src/expo` TypeScript copy), so clear all three known layouts.
+  // app, so most of it is dead weight.
+  //
+  // NOT `dist/src/expo`: since SDK 0.24 the desktop client itself imports
+  // helpers from `dist/src/expo/plugins/` (node-rpc-client.js uses
+  // find-in-ancestor-node-modules.js to locate the worker), so deleting it
+  // breaks every model load with "Cannot find module ...expo/plugins/...".
+  // It is ~100 KB. Only the TypeScript copy and the pre-0.21 layout go.
   const sdk = path.join(NODE_MODULES, '@qvac', 'sdk')
-  for (const rel of [
-    path.join('dist', 'src', 'expo'),
-    path.join('dist', 'expo'),
-    path.join('src', 'expo')
-  ]) {
+  for (const rel of [path.join('dist', 'expo'), path.join('src', 'expo')]) {
     const dir = path.join(sdk, rel)
     if (fs.existsSync(dir)) safeRmDir(dir)
   }

@@ -120,7 +120,10 @@ const PRESETS: { id: string; label: string; instructions: string }[] = [
   }
 ]
 
-export const DEFAULT_CTX_SIZE = 8192
+// An hour-long call transcribes to roughly 15-20k tokens (more in Russian),
+// and Qwen3.5's reasoning shares the same window, so 8k overflowed on any
+// real meeting. Qwen3.5's hybrid attention keeps 32k cheap in memory.
+export const DEFAULT_CTX_SIZE = 32768
 
 export interface SummarySettingsDialogProps {
   open: boolean
