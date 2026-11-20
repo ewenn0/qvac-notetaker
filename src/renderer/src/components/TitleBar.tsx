@@ -33,6 +33,7 @@ export function TitleBar(): JSX.Element {
     >
       <Logo />
       <span className="text-sm font-semibold tracking-tight text-fg">QVAC Notetaker</span>
+      <span className="text-xs font-medium tabular-nums text-muted">v{__APP_VERSION__}</span>
     </header>
   )
 }

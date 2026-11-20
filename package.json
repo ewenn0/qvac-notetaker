@@ -1,6 +1,6 @@
 {
   "name": "qvac-notetaker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local, private AI notetaker for Windows powered by QVAC SDK",
   "main": "./out/main/index.js",
   "author": "Nikita Manshin",

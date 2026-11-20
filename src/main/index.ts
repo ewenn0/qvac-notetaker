@@ -31,6 +31,19 @@ import { Channels, type Device, type ImportedAudio, type ModelKind } from '@shar
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
+// Point the SDK at our slimmed worker explicitly. @qvac/sdk 0.24 looks for
+// `qvac/worker.entry.mjs` only by walking up from `process.cwd()` to the first
+// package.json. An installed app is started with its install folder (or
+// whatever the shortcut says) as cwd, finds no package.json, and falls back to
+// the SDK's default worker, which imports every engine, including the ones
+// prune-modules deletes, and dies with "Worker failed before signalling
+// ready". `app.getAppPath()` is the project root in dev and resources/app in
+// the packaged (asar: false) build, so the entry is found either way.
+if (!process.env['QVAC_WORKER_PATH']) {
+  const workerEntry = join(app.getAppPath(), 'qvac', 'worker.entry.mjs')
+  if (existsSync(workerEntry)) process.env['QVAC_WORKER_PATH'] = workerEntry
+}
+
 // QVAC's native addons aren't compatible with the Chromium sandbox on Linux,
 // and have historically required the same flag on Windows for GPU bindings.
 app.commandLine.appendSwitch('no-sandbox')
